@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+      "aro-hcp-embeddings": {
+        "url": "http://localhost:8000/mcp",
+        "headers": { "Content-Type": "application/json" }
+      }
+    }
+  }

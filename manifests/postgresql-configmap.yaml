@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-initdb
+  labels:
+    app: postgresql
+data:
+  01-create-extensions.sql: |
+    -- Create pgvector extension for embeddings
+    CREATE EXTENSION IF NOT EXISTS vector;
+    
+    -- Grant necessary permissions
+    GRANT ALL PRIVILEGES ON DATABASE aro_hcp_embeddings TO postgres;
+  02-create-schema.sql: |
+    -- This will be automatically run by the ARO-HCP embedder on first boot
+    -- Just ensure the database is properly configured
+    \echo 'PostgreSQL initialized for ARO-HCP embeddings'

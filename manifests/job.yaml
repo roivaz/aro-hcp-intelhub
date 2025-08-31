@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: aro-hcp-embedder-
+  labels:
+    app: aro-hcp-embedder
+    type: manual-run
+spec:
+  template:
+    metadata:
+      labels:
+        app: aro-hcp-embedder
+        type: manual-run
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: aro-hcp-embedder
+        image: quay.io/roivaz/aro-hcp-embedder:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python", "embedding_generator.py"]
+        envFrom:
+        - configMapRef:
+            name: postgresql-config
+        - secretRef:
+            name: config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "4Gi"
+            cpu: "4000m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+      securityContext:
+        fsGroup: 1000
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600  # 1 hour timeout
+
+
+

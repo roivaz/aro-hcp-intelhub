@@ -1,0 +1,8 @@
+{
+  "aro-hcp-embeddings": {
+    "url": "http://your-cluster-ip:30800/mcp",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

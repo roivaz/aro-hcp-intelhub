@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# Local repository clone
+aro-hcp-repo/
+
+# Local binaries
+bin/
+
+# Cloud provider PID files and logs
+/tmp/cloud-provider-kind.pid
+cloud-provider-kind.log
+
+# Generated requirements
+requirements-frozen.txt
+
+# Docker
+.dockerignore
+
+# Kubernetes
+k8s-secret-production.yaml
+*.kubeconfig
+kubeconfig
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# ignore dir
+ignore/

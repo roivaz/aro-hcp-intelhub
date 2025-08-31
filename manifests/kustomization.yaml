@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - postgresql-configmap.yaml
+  - postgresql-statefulset.yaml
+  - postgresql-service.yaml
+  # - mcp-server-deployment.yaml
+  # - mcp-server-service.yaml
+  # - cronjob.yaml
+
+configMapGenerator:
+  - name: postgresql-config
+    behavior: create
+    options:
+      disableNameSuffixHash: true
+    envs:
+    - config.env
+
+secretGenerator:
+  - name: config
+    behavior: create
+    options:
+      disableNameSuffixHash: true
+    type: Opaque
+    envs:
+    - config.env
