@@ -6,49 +6,33 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
-
-	"github.com/spf13/cobra"
 
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/config"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp"
 )
 
 func main() {
-	root := &cobra.Command{
-		Use:   "mcp-server",
-		Short: "ARO-HCP MCP server",
-		RunE:  run,
-	}
+	config.Init(nil)
 
-	root.PersistentFlags().String("postgres-url", "", "Postgres connection URL")
-	root.PersistentFlags().String("ollama-url", "", "Ollama base URL")
-	root.PersistentFlags().String("auth-file", "", "Docker auth file for skopeo")
-	root.PersistentFlags().String("cache-dir", "", "Cache directory path")
-	root.PersistentFlags().Int("max-new-prs", 100, "Maximum PRs to fetch per run")
-	root.PersistentFlags().String("pr-start-date", "", "PR start date (ISO-8601)")
-	root.PersistentFlags().Int("port", 8000, "HTTP port")
-	root.PersistentFlags().String("host", "0.0.0.0", "HTTP host")
-
-	config.Init(root)
-
-	if err := root.Execute(); err != nil {
-		log.Fatalf("command failed: %v", err)
-	}
-}
-
-func run(cmd *cobra.Command, args []string) error {
 	srv := mcp.New(mcp.DefaultConfig())
 
-	host, _ := cmd.Flags().GetString("host")
-	port, _ := cmd.Flags().GetInt("port")
-	addr := host + ":" + strconv.Itoa(port)
+	host := os.Getenv("MCP_SERVER_HOST")
+	if host == "" {
+		host = "0.0.0.0"
+	}
+
+	port := os.Getenv("MCP_SERVER_PORT")
+	if port == "" {
+		port = "8000"
+	}
+
+	addr := host + ":" + port
 
 	httpServer := &http.Server{
 		Addr:    addr,
-		Handler: srv.Handler,
+		Handler: newLoggingMiddleware(srv.Handler),
 	}
 
 	errCh := make(chan error, 1)
@@ -64,11 +48,36 @@ func run(cmd *cobra.Command, args []string) error {
 	case <-stop:
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return httpServer.Shutdown(ctx)
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Fatalf("shutdown error: %v", err)
+		}
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
-			return err
+			log.Fatalf("server error: %v", err)
 		}
-		return nil
 	}
+}
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
+	return &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+}
+
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	lrw.statusCode = code
+	lrw.ResponseWriter.WriteHeader(code)
+}
+
+func newLoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		lrw := newLoggingResponseWriter(w)
+		next.ServeHTTP(lrw, r)
+		elapsed := time.Since(start)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, lrw.statusCode, elapsed)
+	})
 }
