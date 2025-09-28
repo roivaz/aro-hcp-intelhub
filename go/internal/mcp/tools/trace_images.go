@@ -1,0 +1,39 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp/tools/types"
+)
+
+type TraceService interface {
+	TraceImages(ctx context.Context, commitSHA, environment string) (types.TraceImagesResponse, error)
+}
+
+type TraceImagesHandler struct {
+	Service TraceService
+}
+
+func (h *TraceImagesHandler) ToolAdapter(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	commit, _ := args["commit_sha"].(string)
+	env, _ := args["environment"].(string)
+	if commit == "" {
+		return mcp.NewToolResultError("commit_sha is required"), nil
+	}
+	if env == "" {
+		return mcp.NewToolResultError("environment is required"), nil
+	}
+	resp, err := h.Service.TraceImages(ctx, commit, env)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultJSON(payload)
+}
