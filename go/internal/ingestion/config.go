@@ -4,7 +4,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/config"
+	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/diff"
 )
 
 type Config struct {
@@ -16,6 +18,7 @@ type Config struct {
 	IngestionStartDate *time.Time
 	BatchDirection     string
 	RecreateMode       string
+	DiffAnalyzer       diff.Config
 	RepositoryURL      string
 	LocalRepoPath      string
 	GitHubToken        string
@@ -30,9 +33,17 @@ func LoadConfig() (Config, error) {
 		IngestionLimit: config.IngestionLimit(),
 		BatchDirection: strings.ToLower(config.BatchDirection()),
 		RecreateMode:   strings.ToLower(config.RecreateMode()),
-		RepositoryURL:  "https://github.com/Azure/ARO-HCP",
-		LocalRepoPath:  "./ignore/aro-hcp-repo",
-		GitHubToken:    "",
+		DiffAnalyzer: diff.Config{
+			Enabled:          config.DiffAnalysisEnabled(),
+			ModelName:        config.DiffAnalysisModel(),
+			OllamaURL:        config.DiffAnalysisOllamaURL(),
+			RepoPath:         config.RepoPath(),
+			MaxContextTokens: config.DiffAnalysisContextTokens(),
+			Logger:           logr.Logger{},
+		},
+		RepositoryURL: "https://github.com/Azure/ARO-HCP",
+		LocalRepoPath: config.RepoPath(),
+		GitHubToken:   "",
 	}
 
 	if parsed := parseDate(config.IngestionStartDate()); parsed != nil {

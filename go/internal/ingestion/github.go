@@ -71,10 +71,11 @@ func (f *GitHubFetcher) FetchSince(ctx context.Context, mergedAfter time.Time, l
 		State:       "closed",
 		Base:        "main",
 		Sort:        "updated",
-		Direction:   "asc",
-		ListOptions: github.ListOptions{PerPage: 100},
+		Direction:   "desc",
+		ListOptions: github.ListOptions{PerPage: min(limit, 100)},
 	}
-	for len(results) < limit {
+	stop := false
+	for len(results) < limit && !stop {
 		prs, resp, err := f.client.PullRequests.List(ctx, f.owner, f.repo, opts)
 		if err != nil {
 			return nil, err
@@ -84,13 +85,12 @@ func (f *GitHubFetcher) FetchSince(ctx context.Context, mergedAfter time.Time, l
 				continue
 			}
 			mergedAt := pr.GetMergedAt().Time
-			if !mergedAt.After(mergedAfter) {
-				if mergedAt.Equal(mergedAfter) && pr.GetNumber() <= lastNumber {
-					continue
+			if !mergedAfter.IsZero() {
+				if mergedAt.Before(mergedAfter) || (mergedAt.Equal(mergedAfter) && pr.GetNumber() <= lastNumber) {
+					stop = true
+					break
 				}
-				if mergedAfter.IsZero() {
-					// no watermark yet; allow all
-				} else {
+				if mergedAt.Equal(mergedAfter) && pr.GetNumber() <= lastNumber {
 					continue
 				}
 			}
@@ -99,12 +99,25 @@ func (f *GitHubFetcher) FetchSince(ctx context.Context, mergedAfter time.Time, l
 				break
 			}
 		}
-		if resp.NextPage == 0 || len(results) >= limit {
+		if stop || len(results) >= limit || resp.NextPage == 0 {
 			break
 		}
 		opts.Page = resp.NextPage
 	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].MergedAt.Equal(*results[j].MergedAt) {
+			return results[i].Number < results[j].Number
+		}
+		return results[i].MergedAt.Before(*results[j].MergedAt)
+	})
 	return results, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (f *GitHubFetcher) FetchBatch(ctx context.Context, start time.Time, direction string, limit int) ([]PRChange, error) {

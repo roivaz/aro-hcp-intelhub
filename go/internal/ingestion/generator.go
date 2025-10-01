@@ -10,6 +10,7 @@ import (
 	pgvector "github.com/pgvector/pgvector-go"
 
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/db"
+	diffanalyzer "github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/diff"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/embeddings"
 )
 
@@ -81,6 +82,16 @@ func (g *Generator) runBatch(ctx context.Context) error {
 
 func (g *Generator) ingestPRs(ctx context.Context, prs []PRChange) error {
 	processed := 0
+
+	var analyzer *diffanalyzer.Analyzer
+	if g.cfg.DiffAnalyzer.Enabled {
+		a, err := diffanalyzer.NewAnalyzer(g.cfg.DiffAnalyzer)
+		if err != nil {
+			return fmt.Errorf("init diff analyzer: %w", err)
+		}
+		analyzer = a
+	}
+
 	for _, pr := range prs {
 		exists, err := g.repo.HasPR(ctx, pr.Number)
 		if err != nil {
@@ -101,6 +112,39 @@ func (g *Generator) ingestPRs(ctx context.Context, prs []PRChange) error {
 			return fmt.Errorf("ollama returned no vectors for PR #%d", pr.Number)
 		}
 
+		var richDescription *string
+		analysisSuccessful := false
+		var failureReason *string
+
+		if analyzer != nil {
+			metadata := diffanalyzer.PRMetadata{
+				Number:         pr.Number,
+				Title:          pr.Title,
+				Body:           pr.Body,
+				Author:         pr.Author,
+				BaseRef:        pr.BaseRef,
+				HeadCommitSHA:  pr.HeadCommitSHA,
+				MergeCommitSHA: pr.MergeCommitSHA,
+				CreatedAt:      pr.CreatedAt,
+				MergedAt:       pr.MergedAt,
+			}
+			analysis, err := analyzer.Analyze(ctx, metadata)
+			if err != nil {
+				reason := err.Error()
+				failureReason = &reason
+			} else {
+				analysisSuccessful = analysis.AnalysisSuccessful
+				if analysis.RichDescription != "" {
+					desc := analysis.RichDescription
+					richDescription = &desc
+				}
+				if analysis.FailureReason != "" {
+					reason := analysis.FailureReason
+					failureReason = &reason
+				}
+			}
+		}
+
 		record := &db.PREmbedding{
 			PRNumber:           pr.Number,
 			PRTitle:            pr.Title,
@@ -114,7 +158,9 @@ func (g *Generator) ingestPRs(ctx context.Context, prs []PRChange) error {
 			HeadCommitSHA:      nullableString(pr.HeadCommitSHA),
 			MergeCommitSHA:     nullableString(pr.MergeCommitSHA),
 			Embedding:          pgvector.NewVector(vectors[0]),
-			AnalysisSuccessful: false,
+			RichDescription:    richDescription,
+			AnalysisSuccessful: analysisSuccessful,
+			FailureReason:      failureReason,
 		}
 
 		if err := g.repo.StorePR(ctx, record); err != nil {

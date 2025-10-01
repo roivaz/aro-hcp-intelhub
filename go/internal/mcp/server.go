@@ -8,10 +8,12 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/config"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/db"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/embeddings"
 	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp/tools"
+	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/tracing"
 )
 
 type ToolAdapter interface {
@@ -46,11 +48,21 @@ func DefaultConfig() Config {
 	embedClient := embeddings.NewClient(ingestionCfg.OllamaURL, ingestionCfg.EmbeddingModel)
 	searchService := tools.NewDBSearchService(repo, embedClient)
 	detailsService := tools.NewDBDetailsService(repo)
+	traceTracer, err := tracing.NewTracer(tracing.Config{
+		RepoPath:   config.RepoPath(),
+		SkopeoPath: config.TraceSkopeoPath(),
+		PullSecret: config.TracePullSecret(),
+	})
+	if err != nil {
+		log.Fatalf("failed to init trace tracer: %v", err)
+	}
+	traceService := tools.NewTraceImagesService(traceTracer)
 
 	return Config{
 		ToolAdapters: map[string]ToolAdapter{
 			"search_prs":     &tools.SearchPRsHandler{Service: searchService},
 			"get_pr_details": &tools.GetPRDetailsHandler{Service: detailsService},
+			"trace_images":   &tools.TraceImagesHandler{Service: traceService},
 		},
 		Options: []server.StreamableHTTPOption{
 			server.WithEndpointPath("/mcp/jsonrpc"),
