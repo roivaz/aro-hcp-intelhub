@@ -3,7 +3,6 @@ package ingestion
 import (
 	"context"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -62,117 +61,59 @@ func buildPRChange(pr *github.PullRequest) PRChange {
 	}
 }
 
-func (f *GitHubFetcher) FetchSince(ctx context.Context, mergedAfter time.Time, lastNumber int, limit int) ([]PRChange, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	var results []PRChange
-	opts := &github.PullRequestListOptions{
-		State:       "closed",
-		Base:        "main",
-		Sort:        "updated",
-		Direction:   "desc",
-		ListOptions: github.ListOptions{PerPage: min(limit, 100)},
-	}
-	stop := false
-	for len(results) < limit && !stop {
-		prs, resp, err := f.client.PullRequests.List(ctx, f.owner, f.repo, opts)
-		if err != nil {
-			return nil, err
-		}
-		for _, pr := range prs {
-			if pr.MergedAt == nil {
-				continue
-			}
-			mergedAt := pr.GetMergedAt().Time
-			if !mergedAfter.IsZero() {
-				if mergedAt.Before(mergedAfter) || (mergedAt.Equal(mergedAfter) && pr.GetNumber() <= lastNumber) {
-					stop = true
-					break
-				}
-				if mergedAt.Equal(mergedAfter) && pr.GetNumber() <= lastNumber {
-					continue
-				}
-			}
-			results = append(results, buildPRChange(pr))
-			if len(results) >= limit {
-				break
-			}
-		}
-		if stop || len(results) >= limit || resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
-	}
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].MergedAt.Equal(*results[j].MergedAt) {
-			return results[i].Number < results[j].Number
-		}
-		return results[i].MergedAt.Before(*results[j].MergedAt)
-	})
-	return results, nil
+type FetchResult struct {
+	PRs      []PRChange
+	NextPage int
+	HasMore  bool
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func (f *GitHubFetcher) FetchBatch(ctx context.Context, start time.Time, direction string, limit int) ([]PRChange, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	var results []PRChange
-	dir := "desc"
+func (f *GitHubFetcher) FetchBatch(ctx context.Context, start time.Time, direction string, page int) (*FetchResult, error) {
+	// Match GitHub sort order to direction of travel for efficiency:
+	// - "onwards" (forward from date) → ASC (oldest first, moving forward)
+	// - "backwards" (backward from date) → DESC (newest first, moving backward)
+	sortDir := "desc"
 	if strings.EqualFold(direction, "onwards") {
-		dir = "asc"
+		sortDir = "asc"
 	}
+
 	opts := &github.PullRequestListOptions{
 		State:       "closed",
 		Base:        "main",
 		Sort:        "updated",
-		Direction:   dir,
-		ListOptions: github.ListOptions{PerPage: 100},
-	}
-	for len(results) < limit {
-		prs, resp, err := f.client.PullRequests.List(ctx, f.owner, f.repo, opts)
-		if err != nil {
-			return nil, err
-		}
-		for _, pr := range prs {
-			if pr.MergedAt == nil {
-				continue
-			}
-			mergedAt := pr.GetMergedAt().Time
-			if !start.IsZero() {
-				if dir == "desc" && mergedAt.After(start) {
-					continue
-				}
-				if dir == "asc" && mergedAt.Before(start) {
-					continue
-				}
-			}
-			results = append(results, buildPRChange(pr))
-			if len(results) >= limit {
-				break
-			}
-		}
-		if resp.NextPage == 0 || len(results) >= limit {
-			break
-		}
-		opts.Page = resp.NextPage
+		Direction:   sortDir,
+		ListOptions: github.ListOptions{PerPage: 100, Page: page},
 	}
 
-	if dir == "desc" {
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].MergedAt.After(*results[j].MergedAt)
-		})
-	} else {
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].MergedAt.Before(*results[j].MergedAt)
-		})
+	prs, resp, err := f.client.PullRequests.List(ctx, f.owner, f.repo, opts)
+	if err != nil {
+		return nil, err
 	}
-	return results, nil
+
+	var results []PRChange
+	for _, pr := range prs {
+		if pr.MergedAt == nil {
+			continue
+		}
+		mergedAt := pr.GetMergedAt().Time
+		if !start.IsZero() {
+			if strings.EqualFold(direction, "onwards") {
+				// "onwards" = get PRs merged AFTER start (going forward in time)
+				if mergedAt.Before(start) || mergedAt.Equal(start) {
+					continue
+				}
+			} else {
+				// "backwards" = get PRs merged BEFORE start (going backward in time)
+				if mergedAt.After(start) || mergedAt.Equal(start) {
+					continue
+				}
+			}
+		}
+		results = append(results, buildPRChange(pr))
+	}
+
+	return &FetchResult{
+		PRs:      results,
+		NextPage: resp.NextPage,
+		HasMore:  resp.NextPage != 0,
+	}, nil
 }

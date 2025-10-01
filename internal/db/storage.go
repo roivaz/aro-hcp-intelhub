@@ -79,6 +79,7 @@ func (r *SearchRepository) SearchPRs(ctx context.Context, embedding []float32, l
 			"head_commit_sha", "merge_commit_sha",
 		).
 		ColumnExpr("embedding <=> ? AS distance", pgvector.NewVector(embedding)).
+		Where("embedding IS NOT NULL"). // Only search processed PRs
 		OrderExpr("distance")
 	query.Limit(limit)
 
@@ -111,4 +112,40 @@ func (r *SearchRepository) HasPR(ctx context.Context, number int) (bool, error) 
 func (r *SearchRepository) StorePR(ctx context.Context, pr *PREmbedding) error {
 	_, err := r.db.NewInsert().Model(pr).On("CONFLICT (pr_number) DO NOTHING").Exec(ctx)
 	return err
+}
+
+func (r *SearchRepository) GetUnprocessedPRs(ctx context.Context, limit int) ([]*PREmbedding, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var prs []*PREmbedding
+	err := r.db.NewSelect().
+		Model(&prs).
+		Where("processed_at IS NULL").
+		OrderExpr("merged_at DESC").
+		Limit(limit).
+		Scan(ctx)
+	return prs, err
+}
+
+func (r *SearchRepository) UpdatePRProcessing(ctx context.Context, prNumber int, embedding *pgvector.Vector, richDesc *string, analysisSuccess bool, failureReason *string) error {
+	now := time.Now()
+	_, err := r.db.NewUpdate().
+		Model((*PREmbedding)(nil)).
+		Set("embedding = ?", embedding).
+		Set("rich_description = ?", richDesc).
+		Set("analysis_successful = ?", analysisSuccess).
+		Set("failure_reason = ?", failureReason).
+		Set("processed_at = ?", now).
+		Where("pr_number = ?", prNumber).
+		Exec(ctx)
+	return err
+}
+
+func (r *SearchRepository) CountUnprocessedPRs(ctx context.Context) (int, error) {
+	count, err := r.db.NewSelect().
+		Model((*PREmbedding)(nil)).
+		Where("processed_at IS NULL").
+		Count(ctx)
+	return count, err
 }

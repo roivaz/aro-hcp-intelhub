@@ -10,29 +10,29 @@ import (
 )
 
 type Config struct {
-	PostgresURL        string
-	OllamaURL          string
-	EmbeddingModel     string
-	IngestionMode      string
-	IngestionLimit     int
-	IngestionStartDate *time.Time
-	BatchDirection     string
-	RecreateMode       string
-	DiffAnalyzer       diff.Config
-	RepositoryURL      string
-	LocalRepoPath      string
-	GitHubToken        string
+	PostgresURL          string
+	OllamaURL            string
+	EmbeddingModel       string
+	GitHubFetchMax       int        // Maximum PRs to fetch from GitHub per run
+	GitHubFetchStartDate *time.Time // Start date for fetching PRs from GitHub (used when DB is empty)
+	RecreateMode         string
+	ExecutionMode        string // FULL, CACHE, or PROCESS
+	MaxProcessBatch      int    // Maximum PRs to process from DB per run
+	DiffAnalyzer         diff.Config
+	RepositoryURL        string
+	LocalRepoPath        string
+	GitHubToken          string
 }
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		PostgresURL:    config.PostgresURL(),
-		OllamaURL:      config.OllamaURL(),
-		EmbeddingModel: config.EmbeddingModel(),
-		IngestionMode:  config.IngestionMode(),
-		IngestionLimit: config.IngestionLimit(),
-		BatchDirection: strings.ToLower(config.BatchDirection()),
-		RecreateMode:   strings.ToLower(config.RecreateMode()),
+		PostgresURL:     config.PostgresURL(),
+		OllamaURL:       config.OllamaURL(),
+		EmbeddingModel:  config.EmbeddingModel(),
+		GitHubFetchMax:  config.GitHubFetchMax(),
+		RecreateMode:    strings.ToLower(config.RecreateMode()),
+		ExecutionMode:   strings.ToUpper(config.ExecutionMode()),
+		MaxProcessBatch: config.MaxProcessBatch(),
 		DiffAnalyzer: diff.Config{
 			Enabled:          config.DiffAnalysisEnabled(),
 			ModelName:        config.DiffAnalysisModel(),
@@ -46,8 +46,8 @@ func LoadConfig() (Config, error) {
 		GitHubToken:   "",
 	}
 
-	if parsed := parseDate(config.IngestionStartDate()); parsed != nil {
-		cfg.IngestionStartDate = parsed
+	if parsed := parseDate(config.GitHubFetchStartDate()); parsed != nil {
+		cfg.GitHubFetchStartDate = parsed
 	}
 
 	return cfg, nil

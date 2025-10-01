@@ -20,10 +20,10 @@ func setDefaults() {
 	viper.SetDefault(KeyLogLevel, "info")
 	viper.SetDefault(KeyCacheDir, "ignore/cache")
 	viper.SetDefault(KeyEmbeddingModel, "nomic-embed-text")
-	viper.SetDefault(KeyIngestionMode, "INCREMENTAL")
-	viper.SetDefault(KeyIngestionLimit, 100)
-	viper.SetDefault(KeyBatchDirection, "backwards")
+	viper.SetDefault(KeyGitHubFetchMax, 100)
 	viper.SetDefault(KeyRecreateMode, "no")
+	viper.SetDefault(KeyExecutionMode, "FULL")
+	viper.SetDefault(KeyMaxProcessBatch, 100)
 	viper.SetDefault(KeyDiffEnabled, false)
 	viper.SetDefault(KeyDiffModel, "phi3")
 	viper.SetDefault(KeyDiffOllamaURL, "http://localhost:11434")
@@ -37,11 +37,11 @@ func OllamaURL() string              { return viper.GetString(KeyOllamaURL) }
 func AuthFile() string               { return viper.GetString(KeyAuthFile) }
 func CacheDir() string               { return viper.GetString(KeyCacheDir) }
 func EmbeddingModel() string         { return viper.GetString(KeyEmbeddingModel) }
-func IngestionMode() string          { return viper.GetString(KeyIngestionMode) }
-func IngestionLimit() int            { return viper.GetInt(KeyIngestionLimit) }
-func IngestionStartDate() string     { return viper.GetString(KeyIngestionStart) }
-func BatchDirection() string         { return viper.GetString(KeyBatchDirection) }
+func GitHubFetchMax() int            { return viper.GetInt(KeyGitHubFetchMax) }
+func GitHubFetchStartDate() string   { return viper.GetString(KeyGitHubFetchStartDate) }
 func RecreateMode() string           { return viper.GetString(KeyRecreateMode) }
+func ExecutionMode() string          { return viper.GetString(KeyExecutionMode) }
+func MaxProcessBatch() int           { return viper.GetInt(KeyMaxProcessBatch) }
 func DiffAnalysisEnabled() bool      { return viper.GetBool(KeyDiffEnabled) }
 func DiffAnalysisModel() string      { return viper.GetString(KeyDiffModel) }
 func DiffAnalysisOllamaURL() string  { return viper.GetString(KeyDiffOllamaURL) }

@@ -21,6 +21,7 @@ var ignorePatternMap = map[string]string{
 	"helm-render":          `.*chart\.lock$`,
 	"lockfiles":            `\.lock$`,
 	"generated-json":       `.*\.swagger\.json$`,
+	"generated-bicep":      `.*generated.*\.bicep`,
 }
 
 func buildIgnorePatterns() map[string]*regexp.Regexp {

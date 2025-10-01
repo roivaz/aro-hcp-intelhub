@@ -27,61 +27,58 @@ func NewGenerator(cfg Config, database *db.Database, repo *db.SearchRepository, 
 }
 
 func (g *Generator) Run(ctx context.Context) error {
-	if strings.EqualFold(g.cfg.IngestionMode, "BATCH") {
-		return g.runBatch(ctx)
+	switch strings.ToUpper(g.cfg.ExecutionMode) {
+	case "CACHE":
+		return g.RunCache(ctx)
+	case "PROCESS":
+		return g.RunProcess(ctx)
+	case "FULL", "":
+		return g.RunFull(ctx)
+	default:
+		return fmt.Errorf("invalid execution mode: %s (must be FULL, CACHE, or PROCESS)", g.cfg.ExecutionMode)
 	}
-	return g.runIncremental(ctx)
 }
 
-func (g *Generator) runIncremental(ctx context.Context) error {
-	latestMergedAt, latestNumber, err := g.repo.LatestMergedPR(ctx)
-	if err != nil {
-		return fmt.Errorf("latest merged pr: %w", err)
-	}
-	var watermark time.Time
-	var lastNumber int
-	if !latestMergedAt.IsZero() {
-		watermark = latestMergedAt
-		lastNumber = latestNumber
-	} else if g.cfg.IngestionStartDate != nil {
-		watermark = *g.cfg.IngestionStartDate
+func (g *Generator) RunFull(ctx context.Context) error {
+	log.Printf("full mode: caching PRs from GitHub, then processing them")
+
+	// First, cache new PRs from GitHub
+	if err := g.RunCache(ctx); err != nil {
+		return fmt.Errorf("cache phase: %w", err)
 	}
 
-	prs, err := g.fetcher.FetchSince(ctx, watermark, lastNumber, g.cfg.IngestionLimit)
-	if err != nil {
-		return fmt.Errorf("fetch incremental prs: %w", err)
+	// Then, process the cached PRs
+	if err := g.RunProcess(ctx); err != nil {
+		return fmt.Errorf("process phase: %w", err)
 	}
 
-	if len(prs) == 0 {
-		log.Printf("incremental: no new PRs after %s", watermark.Format(time.RFC3339))
+	return nil
+}
+
+func (g *Generator) RunProcess(ctx context.Context) error {
+	limit := g.cfg.MaxProcessBatch
+	if limit <= 0 {
+		limit = g.cfg.GitHubFetchMax
+	}
+
+	unprocessedCount, err := g.repo.CountUnprocessedPRs(ctx)
+	if err != nil {
+		return fmt.Errorf("count unprocessed PRs: %w", err)
+	}
+
+	log.Printf("process mode: found %d unprocessed PRs, will process up to %d", unprocessedCount, limit)
+
+	if unprocessedCount == 0 {
+		log.Printf("process: no unprocessed PRs found")
 		return nil
 	}
 
-	return g.ingestPRs(ctx, prs)
-}
-
-func (g *Generator) runBatch(ctx context.Context) error {
-	if g.cfg.BatchDirection != "backwards" && g.cfg.BatchDirection != "onwards" {
-		return fmt.Errorf("invalid batch direction: %s", g.cfg.BatchDirection)
-	}
-	var start time.Time
-	if g.cfg.IngestionStartDate != nil {
-		start = *g.cfg.IngestionStartDate
-	}
-
-	prs, err := g.fetcher.FetchBatch(ctx, start, g.cfg.BatchDirection, g.cfg.IngestionLimit)
+	prs, err := g.repo.GetUnprocessedPRs(ctx, limit)
 	if err != nil {
-		return fmt.Errorf("fetch batch prs: %w", err)
+		return fmt.Errorf("get unprocessed PRs: %w", err)
 	}
-	if len(prs) == 0 {
-		log.Printf("batch: no PRs fetched starting from %s direction %s", start.Format(time.RFC3339), g.cfg.BatchDirection)
-		return nil
-	}
-	return g.ingestPRs(ctx, prs)
-}
 
-func (g *Generator) ingestPRs(ctx context.Context, prs []PRChange) error {
-	processed := 0
+	log.Printf("process: processing %d PRs sequentially", len(prs))
 
 	var analyzer *diffanalyzer.Analyzer
 	if g.cfg.DiffAnalyzer.Enabled {
@@ -92,59 +89,107 @@ func (g *Generator) ingestPRs(ctx context.Context, prs []PRChange) error {
 		analyzer = a
 	}
 
+	// Process PRs sequentially
+	processed := 0
 	for _, pr := range prs {
-		exists, err := g.repo.HasPR(ctx, pr.Number)
+		if err := g.processSinglePR(ctx, pr, analyzer); err != nil {
+			log.Printf("process: error processing PR #%d: %v", pr.PRNumber, err)
+			return fmt.Errorf("failed processing PR #%d: %w", pr.PRNumber, err)
+		}
+		processed++
+	}
+
+	log.Printf("process: successfully processed %d PRs", processed)
+	return nil
+}
+
+func (g *Generator) RunCache(ctx context.Context) error {
+	log.Printf("cache mode: fetching and storing PR metadata only (no embeddings/analysis)")
+
+	start, err := g.getStartTime(ctx, "cache")
+	if err != nil {
+		return err
+	}
+
+	newPRs, err := g.fetchNewPRs(ctx, start)
+	if err != nil {
+		return err
+	}
+
+	if len(newPRs) == 0 {
+		log.Printf("cache: no new PRs to store")
+		return nil
+	}
+
+	return g.cachePRs(ctx, newPRs)
+}
+
+// getStartTime determines where to start fetching PRs from
+func (g *Generator) getStartTime(ctx context.Context, mode string) (time.Time, error) {
+	latestMergedAt, _, err := g.repo.LatestMergedPR(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get latest merged pr: %w", err)
+	}
+
+	var start time.Time
+	if !latestMergedAt.IsZero() {
+		start = latestMergedAt
+		log.Printf("%s: resuming from latest DB timestamp %s", mode, start.Format(time.RFC3339))
+	} else if g.cfg.GitHubFetchStartDate != nil {
+		start = *g.cfg.GitHubFetchStartDate
+		log.Printf("%s: DB empty, starting from config date %s", mode, start.Format(time.RFC3339))
+	}
+
+	return start, nil
+}
+
+// fetchNewPRs fetches new PRs from GitHub that aren't already in the database
+func (g *Generator) fetchNewPRs(ctx context.Context, start time.Time) ([]PRChange, error) {
+	var newPRs []PRChange
+	currentPage := 0
+	totalFetched := 0
+
+	for len(newPRs) < g.cfg.GitHubFetchMax {
+		result, err := g.fetcher.FetchBatch(ctx, start, "onwards", currentPage)
 		if err != nil {
-			return fmt.Errorf("check PR existence: %w", err)
-		}
-		if exists {
-			log.Printf("ingestion: PR #%d already stored, skipping", pr.Number)
-			continue
+			return nil, fmt.Errorf("fetch batch prs (page %d): %w", currentPage, err)
 		}
 
-		document := embeddings.BuildDocument(pr.Title, pr.Body, "")
-		log.Printf("ingestion: embedding PR #%d", pr.Number)
-		vectors, err := g.embedClient.EmbedTexts(ctx, []string{document})
-		if err != nil {
-			return fmt.Errorf("embed PR #%d: %w", pr.Number, err)
-		}
-		if len(vectors) == 0 {
-			return fmt.Errorf("ollama returned no vectors for PR #%d", pr.Number)
+		if len(result.PRs) == 0 {
+			log.Printf("fetched %d PRs from GitHub total, found %d new", totalFetched, len(newPRs))
+			break
 		}
 
-		var richDescription *string
-		analysisSuccessful := false
-		var failureReason *string
+		totalFetched += len(result.PRs)
 
-		if analyzer != nil {
-			metadata := diffanalyzer.PRMetadata{
-				Number:         pr.Number,
-				Title:          pr.Title,
-				Body:           pr.Body,
-				Author:         pr.Author,
-				BaseRef:        pr.BaseRef,
-				HeadCommitSHA:  pr.HeadCommitSHA,
-				MergeCommitSHA: pr.MergeCommitSHA,
-				CreatedAt:      pr.CreatedAt,
-				MergedAt:       pr.MergedAt,
+		for _, pr := range result.PRs {
+			if len(newPRs) >= g.cfg.GitHubFetchMax {
+				break
 			}
-			analysis, err := analyzer.Analyze(ctx, metadata)
+
+			exists, err := g.repo.HasPR(ctx, pr.Number)
 			if err != nil {
-				reason := err.Error()
-				failureReason = &reason
+				return nil, fmt.Errorf("check PR existence: %w", err)
+			}
+			if !exists {
+				newPRs = append(newPRs, pr)
 			} else {
-				analysisSuccessful = analysis.AnalysisSuccessful
-				if analysis.RichDescription != "" {
-					desc := analysis.RichDescription
-					richDescription = &desc
-				}
-				if analysis.FailureReason != "" {
-					reason := analysis.FailureReason
-					failureReason = &reason
-				}
+				log.Printf("PR #%d already stored, skipping", pr.Number)
 			}
 		}
 
+		if len(newPRs) >= g.cfg.GitHubFetchMax || !result.HasMore {
+			break
+		}
+
+		currentPage = result.NextPage
+	}
+
+	return newPRs, nil
+}
+
+func (g *Generator) cachePRs(ctx context.Context, prs []PRChange) error {
+	for _, pr := range prs {
 		record := &db.PREmbedding{
 			PRNumber:           pr.Number,
 			PRTitle:            pr.Title,
@@ -157,22 +202,83 @@ func (g *Generator) ingestPRs(ctx context.Context, prs []PRChange) error {
 			GithubBaseSHA:      nullableString(pr.BaseSHA),
 			HeadCommitSHA:      nullableString(pr.HeadCommitSHA),
 			MergeCommitSHA:     nullableString(pr.MergeCommitSHA),
-			Embedding:          pgvector.NewVector(vectors[0]),
-			RichDescription:    richDescription,
-			AnalysisSuccessful: analysisSuccessful,
-			FailureReason:      failureReason,
+			Embedding:          nil, // Not processed yet
+			RichDescription:    nil,
+			AnalysisSuccessful: false,
+			FailureReason:      nil,
+			ProcessedAt:        nil, // Mark as unprocessed
 		}
 
 		if err := g.repo.StorePR(ctx, record); err != nil {
 			return fmt.Errorf("store PR #%d: %w", pr.Number, err)
 		}
-		log.Printf("ingestion: stored embedding for PR #%d", pr.Number)
-
-		processed++
+		log.Printf("cache: stored PR #%d (unprocessed)", pr.Number)
 	}
 
-	log.Printf("processed %d new PR embeddings", processed)
+	log.Printf("cached %d new PRs without processing", len(prs))
 	return nil
+}
+
+func (g *Generator) processSinglePR(ctx context.Context, pr *db.PREmbedding, analyzer *diffanalyzer.Analyzer) error {
+	log.Printf("process: generating embedding for PR #%d", pr.PRNumber)
+
+	document := embeddings.BuildDocument(pr.PRTitle, pr.PRBody, "")
+	vectors, err := g.embedClient.EmbedTexts(ctx, []string{document})
+	if err != nil {
+		return fmt.Errorf("embed PR #%d: %w", pr.PRNumber, err)
+	}
+	if len(vectors) == 0 {
+		return fmt.Errorf("ollama returned no vectors for PR #%d", pr.PRNumber)
+	}
+
+	embedding := pgvector.NewVector(vectors[0])
+	var richDescription *string
+	analysisSuccessful := false
+	var failureReason *string
+
+	if analyzer != nil {
+		log.Printf("process: analyzing diff for PR #%d", pr.PRNumber)
+		metadata := diffanalyzer.PRMetadata{
+			Number:         pr.PRNumber,
+			Title:          pr.PRTitle,
+			Body:           pr.PRBody,
+			Author:         pr.Author,
+			BaseRef:        pr.BaseRef,
+			HeadCommitSHA:  stringValue(pr.HeadCommitSHA),
+			MergeCommitSHA: stringValue(pr.MergeCommitSHA),
+			CreatedAt:      pr.CreatedAt,
+			MergedAt:       pr.MergedAt,
+		}
+		analysis, err := analyzer.Analyze(ctx, metadata)
+		if err != nil {
+			reason := err.Error()
+			failureReason = &reason
+		} else {
+			analysisSuccessful = analysis.AnalysisSuccessful
+			if analysis.RichDescription != "" {
+				desc := analysis.RichDescription
+				richDescription = &desc
+			}
+			if analysis.FailureReason != "" {
+				reason := analysis.FailureReason
+				failureReason = &reason
+			}
+		}
+	}
+
+	if err := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, &embedding, richDescription, analysisSuccessful, failureReason); err != nil {
+		return fmt.Errorf("update PR #%d: %w", pr.PRNumber, err)
+	}
+
+	log.Printf("process: completed PR #%d (analysis_successful=%v)", pr.PRNumber, analysisSuccessful)
+	return nil
+}
+
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func nullableString(value string) *string {
