@@ -50,9 +50,13 @@ build: ## Build binaries (ingest + mcp-server)
 	$(GO) build $(CMD_MCP)
 .PHONY: build
 
-run-ingest: ## Run ingest command locally
-	$(GO) run $(CMD_INGEST)
-.PHONY: run-ingest
+run-ingest-prs: ## Run ingest command locally
+	$(GO) run $(CMD_INGEST) prs
+.PHONY: run-ingest-prs
+
+run-ingest-docs: ## Run ingest command locally
+	$(GO) run $(CMD_INGEST) docs
+.PHONY: run-ingest-docs
 
 run-mcp: ## Run MCP server locally
 	$(GO) run $(CMD_MCP)

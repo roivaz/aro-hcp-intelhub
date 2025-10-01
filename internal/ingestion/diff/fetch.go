@@ -1,12 +1,12 @@
 package diff
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/gitrepo"
 )
 
 var configureFetchSpecOnce sync.Once
@@ -25,7 +25,8 @@ func fetchConsolidatedDiff(ctx context.Context, meta PRMetadata, repoPath string
 		return "", fmt.Errorf("configure fetch spec: %w", err)
 	}
 
-	if _, err := gitCommand(ctx, repoPath, "fetch", "origin", "--prune"); err != nil {
+	repo := gitrepo.New(gitrepo.RepoConfig{Path: repoPath})
+	if err := repo.Fetch(ctx); err != nil {
 		return "", fmt.Errorf("git fetch origin: %w", err)
 	}
 
@@ -34,7 +35,9 @@ func fetchConsolidatedDiff(ctx context.Context, meta PRMetadata, repoPath string
 		parent := fmt.Sprintf("%s^1", meta.MergeCommitSHA)
 		rangeSpec := fmt.Sprintf("%s..%s", parent, meta.MergeCommitSHA)
 		log.Debug("generating diff", "range", rangeSpec)
-		diff, err := gitCommand(ctx, repoPath, "diff", "--unified=3", parent, meta.MergeCommitSHA)
+		// Prefer 'show' with range to match tracer semantics; keep unified context 3
+		r := gitrepo.New(gitrepo.RepoConfig{Path: repoPath})
+		diff, err := r.MergeDiff(ctx, meta.MergeCommitSHA)
 		if err != nil {
 			return "", err
 		}
@@ -73,14 +76,8 @@ func normalizeBaseRef(base string) string {
 	return fmt.Sprintf("origin/%s", base)
 }
 
+// gitCommand retained only for config probing; consider replacing with gitrepo if needed elsewhere.
 func gitCommand(ctx context.Context, repoPath string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoPath}, args...)...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s failed: %v: %s", strings.Join(args, " "), err, stderr.String())
-	}
-	return stdout.String(), nil
+	r := gitrepo.New(gitrepo.RepoConfig{Path: repoPath})
+	return r.Run(ctx, args...)
 }

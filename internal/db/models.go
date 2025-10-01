@@ -29,3 +29,23 @@ type PREmbedding struct {
 	FailureReason      *string          `bun:"failure_reason"`
 	ProcessedAt        *time.Time       `bun:"processed_at"` // NULL = needs processing
 }
+
+// DocumentChunk represents an embedded chunk of a documentation file.
+type DocumentChunk struct {
+	bun.BaseModel `bun:"table:documents"`
+
+	ID             string          `bun:"id,pk"` // sha256(repo|path|commit|idx|text)
+	Repo           string          `bun:"repo"`
+	Component      *string         `bun:"component,nullzero"`
+	Path           string          `bun:"path"` // repo-relative path
+	CommitSHA      string          `bun:"commit_sha"`
+	DocType        string          `bun:"doc_type"` // readme|docs|adr|runbook|other
+	ChunkIndex     int             `bun:"chunk_index"`
+	ChunkText      string          `bun:"chunk_text"`
+	Embedding      pgvector.Vector `bun:"embedding"` // vector(768)
+	EmbeddingModel string          `bun:"embedding_model"`
+	UpdatedAt      time.Time       `bun:"updated_at,nullzero,default:now()"`
+	SourceURL      *string         `bun:"source_url,nullzero"`
+}
+
+func (DocumentChunk) TableName() string { return "documents" }

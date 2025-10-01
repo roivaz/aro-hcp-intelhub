@@ -11,6 +11,8 @@ import (
 
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
+
+	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/gitrepo"
 )
 
 const (
@@ -197,10 +199,9 @@ func (t *Tracer) Trace(ctx context.Context, commitSHA, environment string) (Trac
 }
 
 func (t *Tracer) ensureRepo(ctx context.Context) error {
-	if _, err := os.Stat(t.config.RepoPath); os.IsNotExist(err) {
-		return cloneRepo(ctx, t.config.RepoURL, t.config.RepoPath)
-	}
-	return fetchRepo(ctx, t.config.RepoPath)
+	repo := gitrepo.New(gitrepo.RepoConfig{URL: t.config.RepoURL, Path: t.config.RepoPath})
+	_, err := repo.Ensure(ctx)
+	return err
 }
 
 func (t *Tracer) checkoutCommit(ctx context.Context, repoPath, commit string) (string, func(), error) {
@@ -218,13 +219,14 @@ func (t *Tracer) checkoutCommit(ctx context.Context, repoPath, commit string) (s
 		_ = os.RemoveAll(checkoutDir)
 	}
 
-	if err := runGit(ctx, repoPath, "worktree", "add", "--detach", checkoutDir, commit); err != nil {
+	repo := gitrepo.New(gitrepo.RepoConfig{URL: t.config.RepoURL, Path: repoPath})
+	if err := repo.WorktreeAddDetach(ctx, checkoutDir, commit); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("create worktree: %w", err)
 	}
 
 	return checkoutDir, func() {
-		_ = runGit(context.Background(), repoPath, "worktree", "remove", checkoutDir, "--force")
+		_ = repo.WorktreeRemove(context.Background(), checkoutDir)
 		cleanup()
 	}, nil
 }
