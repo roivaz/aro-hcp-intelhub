@@ -8,7 +8,7 @@ import (
 
 func Init(root *cobra.Command) {
 	viper.AutomaticEnv()
-	_ = godotenv.Load("config-go.env")
+	_ = godotenv.Load("manifests/config.env")
 	if root != nil {
 		_ = viper.BindPFlags(root.PersistentFlags())
 	}

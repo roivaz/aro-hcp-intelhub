@@ -1,85 +1,36 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
+bin/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+coverage.out
 
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
+# Dependency vendors
+vendor/
 
-# Environment variables
-.env
+# Executables and tests
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
 
-# IDE
-.vscode/
-.idea/
+# Logs and temp files
+*.log
+*.tmp
 *.swp
 *.swo
 *~
 
-# Testing
-.coverage
-.pytest_cache/
-htmlcov/
-.tox/
-.nox/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Database
-*.db
-*.sqlite
-
-# Logs
-*.log
-
-# Local repository clone
-aro-hcp-repo/
-
-# Local binaries
-bin/
-
-# Cloud provider PID files and logs
-/tmp/cloud-provider-kind.pid
+# Tooling artifacts
 cloud-provider-kind.log
-
-# Generated requirements
-requirements-frozen.txt
-
-# Docker
-.dockerignore
-
-# Kubernetes
-k8s-secret-production.yaml
-*.kubeconfig
+tmp/cloud-provider-kind.pid
 kubeconfig
 
-# macOS
-.DS_Store
+# IDE/editor metadata
+.idea/
+.vscode/
 
-# Windows
+# Operating system files
+.DS_Store
 Thumbs.db
 ehthumbs.db
-
-# ignore dir
-ignore/
