@@ -6,12 +6,13 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/roivaz/aro-hcp-intelhub/internal/logging"
 	"github.com/tmc/langchaingo/textsplitter"
 )
 
 var diffHeaderRegexp = regexp.MustCompile(`(?m)^diff --git a/(?P<old>.*?) b/(?P<new>.*?)$`)
 
-func splitDiffIntoFiles(diffText string, log logger) [][2]string {
+func splitDiffIntoFiles(diffText string, log logging.Logger) [][2]string {
 	if strings.TrimSpace(diffText) == "" {
 		return nil
 	}
@@ -61,7 +62,7 @@ func filterGeneratedFiles(chunks [][2]string, patterns map[string]*regexp.Regexp
 	return included, skipped
 }
 
-func buildDocuments(chunks [][2]string, log logger, cfg Config) ([]Document, DocumentStats) {
+func buildDocuments(chunks [][2]string, log logging.Logger, cfg Config) ([]Document, DocumentStats) {
 	docs := make([]Document, 0, len(chunks))
 	tokenCounts := make([]int, 0, len(chunks))
 
@@ -100,7 +101,7 @@ func buildDocuments(chunks [][2]string, log logger, cfg Config) ([]Document, Doc
 	return docs, stats
 }
 
-func splitChunkRecursive(content, path string, splitter textsplitter.RecursiveCharacter, log logger, targetTokens int) ([]Document, []int) {
+func splitChunkRecursive(content, path string, splitter textsplitter.RecursiveCharacter, log logging.Logger, targetTokens int) ([]Document, []int) {
 	tokens := estimateTokens(content)
 
 	var chunks []string

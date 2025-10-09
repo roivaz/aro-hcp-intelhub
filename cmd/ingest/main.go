@@ -5,16 +5,20 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/google/go-github/v66/github"
 	"github.com/spf13/cobra"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/config"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/db"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/docs"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/embeddings"
+	"github.com/roivaz/aro-hcp-intelhub/internal/config"
+	"github.com/roivaz/aro-hcp-intelhub/internal/db"
+	"github.com/roivaz/aro-hcp-intelhub/internal/docs"
+	"github.com/roivaz/aro-hcp-intelhub/internal/gitrepo"
+	"github.com/roivaz/aro-hcp-intelhub/internal/ingestion"
+	"github.com/roivaz/aro-hcp-intelhub/internal/ingestion/embeddings"
+
+	vcsurl "github.com/gitsight/go-vcsurl"
 )
 
 var rootCmd = &cobra.Command{
@@ -37,13 +41,8 @@ var prsCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		ctx := context.Background()
-		if err := database.Bootstrap(ctx, cfg.RecreateMode); err != nil {
-			return err
-		}
-
-		repo := db.NewSearchRepository(database)
-		embedClient := embeddings.NewClient(cfg.OllamaURL, cfg.EmbeddingModel)
+		repo := db.NewSearchRepository(database, db.WithTraceCacheMax(config.TraceCacheMaxEntries()))
+		embedClient := embeddings.NewClient(cfg.OllamaURL, cfg.EmbeddingModel, cfg.LLMCallTimeout)
 		ghClient := github.NewClient(nil)
 		fetcher := ingestion.NewGitHubFetcher(ghClient, "Azure", "ARO-HCP")
 
@@ -60,10 +59,23 @@ var prsCmd = &cobra.Command{
 	},
 }
 
-var docsCmd = &cobra.Command{
-	Use:   "docs",
-	Short: "Ingest documentation (Markdown) into vector store",
-	RunE: func(cmd *cobra.Command, args []string) error {
+func newDocsCmd() *cobra.Command {
+
+	var repoURLs []string
+	var component string
+	var ref string
+
+	cmd := &cobra.Command{
+		Use:   "docs",
+		Short: "Ingest documentation (Markdown) into vector store",
+	}
+
+	// Build repo list from flags (repeatable --docs-repo full URL, with optional @ref and #component)
+	cmd.Flags().StringArrayVar(&repoURLs, "repo-url", nil, "Repo URL to ingest (repeat)")
+	cmd.Flags().StringVar(&component, "component", "", "Component name")
+	cmd.Flags().StringVar(&ref, "ref", "HEAD", "Reference name")
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		cfg, err := ingestion.LoadConfig()
 		if err != nil {
 			return err
@@ -79,7 +91,7 @@ var docsCmd = &cobra.Command{
 
 		ing := docs.Ingester{
 			DB:        database.Bun(),
-			Client:    embeddings.NewClient(cfg.OllamaURL, cfg.EmbeddingModel),
+			Client:    embeddings.NewClient(cfg.OllamaURL, cfg.EmbeddingModel, cfg.LLMCallTimeout),
 			Chunker:   chunker,
 			Include:   []string{"**/*.md", "**/*.mdx", "README.md"},
 			Exclude:   []string{"**/.git/**"},
@@ -88,19 +100,39 @@ var docsCmd = &cobra.Command{
 			ModelName: cfg.EmbeddingModel,
 		}
 
-		// Single repo from ARO_HCP_REPO_PATH for now; can extend to CSV later
-		repoName := "Azure/ARO-HCP"
-		repos := []docs.RepoSpec{{Name: repoName, Path: cfg.LocalRepoPath}}
+		var repos []docs.RepoSpec
+		for _, url := range repoURLs {
+			surl, err := vcsurl.Parse(url)
+			if err != nil {
+				log.Fatalf("doesn't look like a VCS URL: %s", err)
+			}
+
+			localPath := filepath.Join(config.CacheDir(), surl.Name)
+			if _, err := gitrepo.New(gitrepo.RepoConfig{URL: url, Path: localPath}).Ensure(cmd.Context()); err != nil {
+				log.Printf("ensure clone for %s: %s", url, err)
+				continue
+			}
+			if component == "" {
+				component = surl.Name
+			}
+			repos = append(repos, docs.RepoSpec{Name: url, Path: localPath, Ref: ref, Component: component})
+		}
+		if len(repos) == 0 {
+			// Fallback to local ARO-HCP repo path
+			repos = []docs.RepoSpec{{Name: "Azure/ARO-HCP", Path: cfg.LocalRepoPath}}
+		}
 		ctx := context.Background()
 		return ing.Run(ctx, repos)
-	},
+	}
+
+	return cmd
 }
 
 func main() {
 	// Bind config/env for all subcommands
 	config.Init(rootCmd)
 	rootCmd.AddCommand(prsCmd)
-	rootCmd.AddCommand(docsCmd)
+	rootCmd.AddCommand(newDocsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("ingest: %v", err)

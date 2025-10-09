@@ -1,4 +1,4 @@
-package tracing
+package traceimages
 
 type Component struct {
 	Name          string

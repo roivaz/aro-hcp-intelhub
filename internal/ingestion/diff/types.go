@@ -1,11 +1,25 @@
 package diff
 
-import "time"
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+)
+
+type FailureCategory string
+
+const (
+	FailureCategoryLargeDiff FailureCategory = "large_diff"
+	FailureCategoryTimeout   FailureCategory = "timeout"
+	FailureCategoryError     FailureCategory = "error"
+)
 
 type Analysis struct {
-	RichDescription    string `json:"rich_description"`
-	AnalysisSuccessful bool   `json:"analysis_successful"`
-	FailureReason      string `json:"failure_reason,omitempty"`
+	RichDescription    string          `json:"rich_description"`
+	AnalysisSuccessful bool            `json:"analysis_successful"`
+	FailureReason      string          `json:"failure_reason,omitempty"`
+	FailureCategory    FailureCategory `json:"failure_category,omitempty"`
 }
 
 type PRMetadata struct {
@@ -33,4 +47,23 @@ type DocumentStats struct {
 	FilesFiltered int
 	MaxTokens     float64
 	MedianTokens  float64
+}
+
+func GetFailureDetails(err error) (reason string, category FailureCategory) {
+	if err == nil {
+		return "", ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout: " + strings.TrimSpace(err.Error()), FailureCategoryTimeout
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		msg = "unknown failure"
+	}
+	return msg, FailureCategoryError
+}
+
+func GetFailureCategory(err error) FailureCategory {
+	_, category := GetFailureDetails(err)
+	return category
 }

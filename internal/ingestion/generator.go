@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	pgvector "github.com/pgvector/pgvector-go"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/db"
-	diffanalyzer "github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/diff"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/embeddings"
+	"github.com/roivaz/aro-hcp-intelhub/internal/db"
+	dbmigrate "github.com/roivaz/aro-hcp-intelhub/internal/db/migrate"
+	diffanalyzer "github.com/roivaz/aro-hcp-intelhub/internal/ingestion/diff"
+	"github.com/roivaz/aro-hcp-intelhub/internal/ingestion/embeddings"
 )
 
 type Generator struct {
@@ -27,6 +27,10 @@ func NewGenerator(cfg Config, database *db.Database, repo *db.SearchRepository, 
 }
 
 func (g *Generator) Run(ctx context.Context) error {
+	if err := dbmigrate.EnsureCurrent(ctx, g.db.Bun(), "", g.cfg.AutoMigrate); err != nil {
+		return err
+	}
+
 	switch strings.ToUpper(g.cfg.ExecutionMode) {
 	case "CACHE":
 		return g.RunCache(ctx)
@@ -94,24 +98,19 @@ func (g *Generator) RunProcess(ctx context.Context) error {
 	for _, pr := range prs {
 		if err := g.processSinglePR(ctx, pr, analyzer); err != nil {
 			log.Printf("process: error processing PR #%d: %v", pr.PRNumber, err)
-			return fmt.Errorf("failed processing PR #%d: %w", pr.PRNumber, err)
+			continue
 		}
 		processed++
 	}
 
-	log.Printf("process: successfully processed %d PRs", processed)
+	log.Printf("process: processed %d PR(s)", processed)
 	return nil
 }
 
 func (g *Generator) RunCache(ctx context.Context) error {
 	log.Printf("cache mode: fetching and storing PR metadata only (no embeddings/analysis)")
 
-	start, err := g.getStartTime(ctx, "cache")
-	if err != nil {
-		return err
-	}
-
-	newPRs, err := g.fetchNewPRs(ctx, start)
+	newPRs, err := g.fetchNewPRs(ctx)
 	if err != nil {
 		return err
 	}
@@ -124,43 +123,24 @@ func (g *Generator) RunCache(ctx context.Context) error {
 	return g.cachePRs(ctx, newPRs)
 }
 
-// getStartTime determines where to start fetching PRs from
-func (g *Generator) getStartTime(ctx context.Context, mode string) (time.Time, error) {
-	latestMergedAt, _, err := g.repo.LatestMergedPR(ctx)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("get latest merged pr: %w", err)
-	}
-
-	var start time.Time
-	if !latestMergedAt.IsZero() {
-		start = latestMergedAt
-		log.Printf("%s: resuming from latest DB timestamp %s", mode, start.Format(time.RFC3339))
-	} else if g.cfg.GitHubFetchStartDate != nil {
-		start = *g.cfg.GitHubFetchStartDate
-		log.Printf("%s: DB empty, starting from config date %s", mode, start.Format(time.RFC3339))
-	}
-
-	return start, nil
-}
-
 // fetchNewPRs fetches new PRs from GitHub that aren't already in the database
-func (g *Generator) fetchNewPRs(ctx context.Context, start time.Time) ([]PRChange, error) {
+func (g *Generator) fetchNewPRs(ctx context.Context) ([]PRChange, error) {
 	var newPRs []PRChange
-	currentPage := 0
+	currentPage := 1
 	totalFetched := 0
+	reachedCached := false
 
 	for len(newPRs) < g.cfg.GitHubFetchMax {
-		result, err := g.fetcher.FetchBatch(ctx, start, "onwards", currentPage)
+		result, err := g.fetcher.FetchBatch(ctx, currentPage)
 		if err != nil {
 			return nil, fmt.Errorf("fetch batch prs (page %d): %w", currentPage, err)
 		}
 
-		if len(result.PRs) == 0 {
-			log.Printf("fetched %d PRs from GitHub total, found %d new", totalFetched, len(newPRs))
+		if result.PageCount == 0 {
 			break
 		}
 
-		totalFetched += len(result.PRs)
+		totalFetched += result.PageCount
 
 		for _, pr := range result.PRs {
 			if len(newPRs) >= g.cfg.GitHubFetchMax {
@@ -171,20 +151,22 @@ func (g *Generator) fetchNewPRs(ctx context.Context, start time.Time) ([]PRChang
 			if err != nil {
 				return nil, fmt.Errorf("check PR existence: %w", err)
 			}
-			if !exists {
-				newPRs = append(newPRs, pr)
-			} else {
-				log.Printf("PR #%d already stored, skipping", pr.Number)
+			if exists {
+				log.Printf("PR #%d already stored, stopping at first cached PR", pr.Number)
+				reachedCached = true
+				break
 			}
+			newPRs = append(newPRs, pr)
 		}
 
-		if len(newPRs) >= g.cfg.GitHubFetchMax || !result.HasMore {
+		if len(newPRs) >= g.cfg.GitHubFetchMax || reachedCached || !result.HasMore {
 			break
 		}
 
 		currentPage = result.NextPage
 	}
 
+	log.Printf("cache: scanned %d PRs from GitHub total, found %d new", totalFetched, len(newPRs))
 	return newPRs, nil
 }
 
@@ -225,16 +207,26 @@ func (g *Generator) processSinglePR(ctx context.Context, pr *db.PREmbedding, ana
 	document := embeddings.BuildDocument(pr.PRTitle, pr.PRBody, "")
 	vectors, err := g.embedClient.EmbedTexts(ctx, []string{document})
 	if err != nil {
-		return fmt.Errorf("embed PR #%d: %w", pr.PRNumber, err)
+		reason, category := diffanalyzer.GetFailureDetails(err)
+		log.Printf("process: embedding failed for PR #%d: %v", pr.PRNumber, err)
+		if updateErr := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, nil, nil, false, strPtr(reason), strPtr(string(category))); updateErr != nil {
+			return fmt.Errorf("update PR #%d after embedding failure: %w", pr.PRNumber, updateErr)
+		}
+		return nil
 	}
 	if len(vectors) == 0 {
-		return fmt.Errorf("ollama returned no vectors for PR #%d", pr.PRNumber)
+		reason := "embedding returned no vectors"
+		if updateErr := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, nil, nil, false, strPtr(reason), strPtr("empty_embedding")); updateErr != nil {
+			return fmt.Errorf("update PR #%d after empty embedding: %w", pr.PRNumber, updateErr)
+		}
+		return nil
 	}
 
 	embedding := pgvector.NewVector(vectors[0])
 	var richDescription *string
 	analysisSuccessful := false
 	var failureReason *string
+	var failureCategory *string
 
 	if analyzer != nil {
 		log.Printf("process: analyzing diff for PR #%d", pr.PRNumber)
@@ -251,8 +243,9 @@ func (g *Generator) processSinglePR(ctx context.Context, pr *db.PREmbedding, ana
 		}
 		analysis, err := analyzer.Analyze(ctx, metadata)
 		if err != nil {
-			reason := err.Error()
-			failureReason = &reason
+			reason, category := diffanalyzer.GetFailureDetails(err)
+			failureReason = strPtr(reason)
+			failureCategory = strPtr(string(category))
 		} else {
 			analysisSuccessful = analysis.AnalysisSuccessful
 			if analysis.RichDescription != "" {
@@ -263,10 +256,14 @@ func (g *Generator) processSinglePR(ctx context.Context, pr *db.PREmbedding, ana
 				reason := analysis.FailureReason
 				failureReason = &reason
 			}
+			if analysis.FailureCategory != "" {
+				category := analysis.FailureCategory
+				failureCategory = strPtr(string(category))
+			}
 		}
 	}
 
-	if err := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, &embedding, richDescription, analysisSuccessful, failureReason); err != nil {
+	if err := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, &embedding, richDescription, analysisSuccessful, failureReason, failureCategory); err != nil {
 		return fmt.Errorf("update PR #%d: %w", pr.PRNumber, err)
 	}
 
@@ -286,4 +283,11 @@ func nullableString(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

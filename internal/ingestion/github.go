@@ -3,7 +3,6 @@ package ingestion
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/go-github/v66/github"
@@ -62,25 +61,22 @@ func buildPRChange(pr *github.PullRequest) PRChange {
 }
 
 type FetchResult struct {
-	PRs      []PRChange
-	NextPage int
-	HasMore  bool
+	PRs       []PRChange
+	NextPage  int
+	HasMore   bool
+	PageCount int
 }
 
-func (f *GitHubFetcher) FetchBatch(ctx context.Context, start time.Time, direction string, page int) (*FetchResult, error) {
-	// Match GitHub sort order to direction of travel for efficiency:
-	// - "onwards" (forward from date) → ASC (oldest first, moving forward)
-	// - "backwards" (backward from date) → DESC (newest first, moving backward)
-	sortDir := "desc"
-	if strings.EqualFold(direction, "onwards") {
-		sortDir = "asc"
+func (f *GitHubFetcher) FetchBatch(ctx context.Context, page int) (*FetchResult, error) {
+	if page <= 0 {
+		page = 1
 	}
 
 	opts := &github.PullRequestListOptions{
 		State:       "closed",
 		Base:        "main",
 		Sort:        "updated",
-		Direction:   sortDir,
+		Direction:   "desc",
 		ListOptions: github.ListOptions{PerPage: 100, Page: page},
 	}
 
@@ -94,26 +90,13 @@ func (f *GitHubFetcher) FetchBatch(ctx context.Context, start time.Time, directi
 		if pr.MergedAt == nil {
 			continue
 		}
-		mergedAt := pr.GetMergedAt().Time
-		if !start.IsZero() {
-			if strings.EqualFold(direction, "onwards") {
-				// "onwards" = get PRs merged AFTER start (going forward in time)
-				if mergedAt.Before(start) || mergedAt.Equal(start) {
-					continue
-				}
-			} else {
-				// "backwards" = get PRs merged BEFORE start (going backward in time)
-				if mergedAt.After(start) || mergedAt.Equal(start) {
-					continue
-				}
-			}
-		}
 		results = append(results, buildPRChange(pr))
 	}
 
 	return &FetchResult{
-		PRs:      results,
-		NextPage: resp.NextPage,
-		HasMore:  resp.NextPage != 0,
+		PRs:       results,
+		NextPage:  resp.NextPage,
+		HasMore:   resp.NextPage != 0,
+		PageCount: len(prs),
 	}, nil
 }

@@ -12,8 +12,8 @@ import (
 	"github.com/pgvector/pgvector-go"
 	"github.com/uptrace/bun"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/db"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/gitrepo"
+	"github.com/roivaz/aro-hcp-intelhub/internal/db"
+	"github.com/roivaz/aro-hcp-intelhub/internal/gitrepo"
 )
 
 type EmbeddingClient interface {

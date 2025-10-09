@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/pgvector/pgvector-go"
+	tooltypes "github.com/roivaz/aro-hcp-intelhub/internal/mcp/tools/types"
 	"github.com/uptrace/bun"
 )
 
@@ -27,6 +28,7 @@ type PREmbedding struct {
 	RichDescription    *string          `bun:"rich_description"`
 	AnalysisSuccessful bool             `bun:"analysis_successful"`
 	FailureReason      *string          `bun:"failure_reason"`
+	FailureCategory    *string          `bun:"failure_category"`
 	ProcessedAt        *time.Time       `bun:"processed_at"` // NULL = needs processing
 }
 
@@ -49,3 +51,13 @@ type DocumentChunk struct {
 }
 
 func (DocumentChunk) TableName() string { return "documents" }
+
+type TraceImageCache struct {
+	bun.BaseModel `bun:"table:trace_image_cache"`
+	CommitSHA     string                        `bun:"commit_sha,pk"`
+	Environment   string                        `bun:"environment,pk"`
+	Response      tooltypes.TraceImagesResponse `bun:"response_json,type:jsonb"`
+	InsertedAt    time.Time                     `bun:"inserted_at,nullzero,default:now()"`
+}
+
+func (TraceImageCache) TableName() string { return "trace_image_cache" }

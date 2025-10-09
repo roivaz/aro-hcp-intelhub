@@ -1,6 +1,10 @@
 package diff
 
-import "github.com/go-logr/logr"
+import (
+	"time"
+
+	"github.com/go-logr/logr"
+)
 
 type Config struct {
 	Enabled          bool
@@ -8,5 +12,6 @@ type Config struct {
 	OllamaURL        string
 	RepoPath         string
 	MaxContextTokens int
+	CallTimeout      time.Duration
 	Logger           logr.Logger
 }

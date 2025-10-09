@@ -2,11 +2,10 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp/tools/types"
+	"github.com/roivaz/aro-hcp-intelhub/internal/mcp/tools/types"
 )
 
 type SearchService interface {
@@ -39,9 +38,5 @@ func (h *SearchPRsHandler) ToolAdapter(ctx context.Context, req mcp.CallToolRequ
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(results)
-	if err != nil {
-		return nil, err
-	}
-	return mcp.NewToolResultJSON(payload)
+	return mcp.NewToolResultText(string(mustMarshal(results))), nil
 }

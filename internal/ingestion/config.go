@@ -1,27 +1,29 @@
 package ingestion
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/config"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/diff"
+	"github.com/roivaz/aro-hcp-intelhub/internal/config"
+	"github.com/roivaz/aro-hcp-intelhub/internal/ingestion/diff"
 )
 
 type Config struct {
-	PostgresURL          string
-	OllamaURL            string
-	EmbeddingModel       string
-	GitHubFetchMax       int        // Maximum PRs to fetch from GitHub per run
-	GitHubFetchStartDate *time.Time // Start date for fetching PRs from GitHub (used when DB is empty)
-	RecreateMode         string
-	ExecutionMode        string // FULL, CACHE, or PROCESS
-	MaxProcessBatch      int    // Maximum PRs to process from DB per run
-	DiffAnalyzer         diff.Config
-	RepositoryURL        string
-	LocalRepoPath        string
-	GitHubToken          string
+	PostgresURL     string
+	OllamaURL       string
+	EmbeddingModel  string
+	GitHubFetchMax  int    // Maximum PRs to fetch from GitHub per run
+	ExecutionMode   string // FULL, CACHE, or PROCESS
+	MaxProcessBatch int    // Maximum PRs to process from DB per run
+	DiffAnalyzer    diff.Config
+	RepositoryURL   string
+	LocalRepoPath   string
+	GitHubToken     string
+	AutoMigrate     bool
+	LLMCallTimeout  time.Duration
 }
 
 func LoadConfig() (Config, error) {
@@ -30,38 +32,40 @@ func LoadConfig() (Config, error) {
 		OllamaURL:       config.OllamaURL(),
 		EmbeddingModel:  config.EmbeddingModel(),
 		GitHubFetchMax:  config.GitHubFetchMax(),
-		RecreateMode:    strings.ToLower(config.RecreateMode()),
 		ExecutionMode:   strings.ToUpper(config.ExecutionMode()),
 		MaxProcessBatch: config.MaxProcessBatch(),
 		DiffAnalyzer: diff.Config{
 			Enabled:          config.DiffAnalysisEnabled(),
 			ModelName:        config.DiffAnalysisModel(),
 			OllamaURL:        config.DiffAnalysisOllamaURL(),
-			RepoPath:         config.RepoPath(),
+			RepoPath:         filepath.Join(config.CacheDir(), "aro-hcp-repo"),
 			MaxContextTokens: config.DiffAnalysisContextTokens(),
 			Logger:           logr.Logger{},
 		},
 		RepositoryURL: "https://github.com/Azure/ARO-HCP",
-		LocalRepoPath: config.RepoPath(),
+		LocalRepoPath: filepath.Join(config.CacheDir(), "aro-hcp-repo"),
 		GitHubToken:   "",
+		AutoMigrate:   config.AutoMigrate(),
 	}
 
-	if parsed := parseDate(config.GitHubFetchStartDate()); parsed != nil {
-		cfg.GitHubFetchStartDate = parsed
+	timeout, err := parseDuration(config.LLMCallTimeout(), 2*time.Minute)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid llm_call_timeout: %w", err)
 	}
+	cfg.LLMCallTimeout = timeout
+	cfg.DiffAnalyzer.CallTimeout = timeout
 
 	return cfg, nil
 }
 
-func parseDate(value string) *time.Time {
-	if value == "" {
-		return nil
+func parseDuration(value string, fallback time.Duration) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback, nil
 	}
-	if t, err := time.Parse(time.RFC3339, value); err == nil {
-		return &t
+	d, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, err
 	}
-	if t, err := time.Parse("2006-01-02", value); err == nil {
-		return &t
-	}
-	return nil
+	return d, nil
 }

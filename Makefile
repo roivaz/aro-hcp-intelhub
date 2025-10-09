@@ -1,9 +1,10 @@
 # Project metadata
-MODULE           := github.com/rvazquez/ai-assisted-observability-poc/go
+MODULE           := github.com/roivaz/aro-hcp-intelhub/go
 BIN_DIR          := bin
 COVER_PROFILE    := coverage.out
 CMD_INGEST       := ./cmd/ingest
 CMD_MCP          := ./cmd/mcp-server
+CMD_DBCTL        := ./cmd/dbctl
 
 # Container metadata
 IMAGE_REGISTRY   ?= quay.io/roivaz
@@ -18,8 +19,8 @@ CLOUD_PROVIDER_KIND_VERSION ?= latest
 LOCALBIN               := $(shell pwd)/$(BIN_DIR)
 KIND                   := $(LOCALBIN)/kind
 CLOUD_PROVIDER_KIND    := $(LOCALBIN)/cloud-provider-kind
-CLOUD_PROVIDER_KIND_PID_FILE := /tmp/cloud-provider-kind.pid
-CLOUD_PROVIDER_KIND_LOG_FILE := $(PWD)/cloud-provider-kind.log
+CLOUD_PROVIDER_KIND_PID_FILE := $(PWD)/.tmp/cloud-provider-kind.pid
+CLOUD_PROVIDER_KIND_LOG_FILE := $(PWD)/.tmp/cloud-provider-kind.log
 KUBECONFIG             ?= $(PWD)/kubeconfig
 
 # Tools
@@ -45,9 +46,10 @@ test: ## Run unit tests with coverage
 	$(GO) test ./... -coverprofile $(COVER_PROFILE)
 .PHONY: test
 
-build: ## Build binaries (ingest + mcp-server)
+build: ## Build binaries (ingest + mcp-server + dbctl)
 	$(GO) build $(CMD_INGEST)
 	$(GO) build $(CMD_MCP)
+	$(GO) build $(CMD_DBCTL)
 .PHONY: build
 
 run-ingest-prs: ## Run ingest command locally
@@ -61,6 +63,35 @@ run-ingest-docs: ## Run ingest command locally
 run-mcp: ## Run MCP server locally
 	$(GO) run $(CMD_MCP)
 .PHONY: run-mcp
+
+run-dbctl: ## Run dbctl command with arguments ARGS="migrate up"
+	$(GO) run $(CMD_DBCTL) $(ARGS)
+.PHONY: run-dbctl
+
+db-bootstrap: ## Initialize migration tables and run all migrations
+	$(GO) run $(CMD_DBCTL) init
+	$(GO) run $(CMD_DBCTL) migrate up
+.PHONY: db-bootstrap
+
+db-status: ## Show migration status
+	$(GO) run $(CMD_DBCTL) status
+.PHONY: db-status
+
+db-verify: ## Verify database schema is up to date
+	$(GO) run $(CMD_DBCTL) verify
+.PHONY: db-verify
+
+db-recreate-all: ## Drop all application tables and recreate schema (requires DB_ALLOW_DESTRUCTIVE=yes)
+	DB_ALLOW_DESTRUCTIVE=yes $(GO) run $(CMD_DBCTL) recreate all
+.PHONY: db-recreate-all
+
+db-recreate-prs: ## Drop PR ingestion tables and recreate schema (requires DB_ALLOW_DESTRUCTIVE=yes)
+	DB_ALLOW_DESTRUCTIVE=yes $(GO) run $(CMD_DBCTL) recreate prs
+.PHONY: db-recreate-prs
+
+db-recreate-docs: ## Drop documents tables and recreate schema (requires DB_ALLOW_DESTRUCTIVE=yes)
+	DB_ALLOW_DESTRUCTIVE=yes $(GO) run $(CMD_DBCTL) recreate docs
+.PHONY: db-recreate-docs
 
 clean: ## Remove build artifacts
 	rm -f $(COVER_PROFILE)
@@ -96,6 +127,40 @@ container-run: ## Run container locally
 container-push: ## Push container image to registry
 	$(CONTAINER) push $(IMAGE)
 .PHONY: container-push
+
+# DOCKER-COMPOSE TARGETS
+
+COMPOSE          ?= docker compose
+POSTGRES_DSN     ?= postgres://postgres:postgres@localhost:5432/aro_hcp_embeddings?sslmode=disable
+
+compose-up: ## Start local Postgres via docker-compose
+	$(COMPOSE) up -d
+.PHONY: compose-up
+
+compose-down: ## Stop docker-compose stack
+	$(COMPOSE) down --remove-orphans
+.PHONY: compose-down
+
+compose-logs: ## Tail docker-compose logs
+	$(COMPOSE) logs -f
+.PHONY: compose-logs
+
+compose-db-bootstrap: compose-up ## Init + migrate DB inside docker-compose stack
+	POSTGRES_URL=$(POSTGRES_DSN) $(GO) run $(CMD_DBCTL) init
+	POSTGRES_URL=$(POSTGRES_DSN) $(GO) run $(CMD_DBCTL) migrate up
+.PHONY: compose-db-bootstrap
+
+db-connect: ## Open psql shell to the configured database (uses POSTGRES_URL or POSTGRES_DSN)
+	@db_url="$${POSTGRES_URL:-$(POSTGRES_DSN)}"; \
+	if [ -z "$$db_url" ]; then \
+		echo "POSTGRES_URL not set and POSTGRES_DSN empty; unable to connect"; \
+		exit 1; \
+	fi; \
+	psql "$$db_url"
+.PHONY: db-connect
+
+
+# KIND TARGETS
 
 cloud-provider-kind-start: ## Start cloud-provider-kind in background
 	hack/cloud-provider-kind.sh start
@@ -136,8 +201,4 @@ k8s-logs: ## Tail logs from embedder job
 	POD=$$(kubectl get pods -l app=aro-hcp-embedder --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) && \
 	if [ -n "$$POD" ]; then kubectl logs $$POD; else echo "No embedder pods found"; fi
 .PHONY: k8s-logs
-
-db-status: ## Check PostgreSQL connection
-	$(GO) run ./cmd/dbstatus
-.PHONY: db-status
 

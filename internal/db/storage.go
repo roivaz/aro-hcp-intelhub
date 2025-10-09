@@ -8,10 +8,13 @@ import (
 
 	pgvector "github.com/pgvector/pgvector-go"
 	"github.com/uptrace/bun"
+
+	tooltypes "github.com/roivaz/aro-hcp-intelhub/internal/mcp/tools/types"
 )
 
 type SearchRepository struct {
-	db *bun.DB
+	TraceCacheMax int
+	db            *bun.DB
 }
 
 type PRSearchRow struct {
@@ -19,8 +22,22 @@ type PRSearchRow struct {
 	Distance    float64 `bun:"distance"`
 }
 
-func NewSearchRepository(database *Database) *SearchRepository {
-	return &SearchRepository{db: database.Bun()}
+type DocSearchRow struct {
+	DocumentChunk `bun:",extend"`
+	Snippet       string  `bun:"snippet"`
+	Distance      float64 `bun:"distance"`
+}
+
+func NewSearchRepository(database *Database, opts ...func(*SearchRepository)) *SearchRepository {
+	repo := &SearchRepository{db: database.Bun()}
+	for _, opt := range opts {
+		opt(repo)
+	}
+	return repo
+}
+
+func WithTraceCacheMax(n int) func(*SearchRepository) {
+	return func(r *SearchRepository) { r.TraceCacheMax = n }
 }
 
 func (r *SearchRepository) LatestMergedPR(ctx context.Context) (time.Time, int, error) {
@@ -89,6 +106,29 @@ func (r *SearchRepository) SearchPRs(ctx context.Context, embedding []float32, l
 	return results, nil
 }
 
+func (r *SearchRepository) SearchDocs(ctx context.Context, embedding []float32, limit int, component, repo *string) ([]DocSearchRow, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	var results []DocSearchRow
+	q := r.db.NewSelect().Model(&results).
+		Column("id", "repo", "component", "path", "commit_sha", "source_url").
+		ColumnExpr("substring(chunk_text for 400) AS snippet").
+		ColumnExpr("embedding <=> ? AS distance", pgvector.NewVector(embedding)).
+		OrderExpr("distance").
+		Limit(limit)
+	if component != nil && *component != "" {
+		q = q.Where("component = ?", *component)
+	}
+	if repo != nil && *repo != "" {
+		q = q.Where("repo = ?", *repo)
+	}
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func (r *SearchRepository) GetPRByNumber(ctx context.Context, number int) (*PREmbedding, error) {
 	pr := new(PREmbedding)
 	err := r.db.NewSelect().Model(pr).Where("pr_number = ?", number).Scan(ctx)
@@ -128,7 +168,7 @@ func (r *SearchRepository) GetUnprocessedPRs(ctx context.Context, limit int) ([]
 	return prs, err
 }
 
-func (r *SearchRepository) UpdatePRProcessing(ctx context.Context, prNumber int, embedding *pgvector.Vector, richDesc *string, analysisSuccess bool, failureReason *string) error {
+func (r *SearchRepository) UpdatePRProcessing(ctx context.Context, prNumber int, embedding *pgvector.Vector, richDesc *string, analysisSuccess bool, failureReason *string, failureCategory *string) error {
 	now := time.Now()
 	_, err := r.db.NewUpdate().
 		Model((*PREmbedding)(nil)).
@@ -136,6 +176,7 @@ func (r *SearchRepository) UpdatePRProcessing(ctx context.Context, prNumber int,
 		Set("rich_description = ?", richDesc).
 		Set("analysis_successful = ?", analysisSuccess).
 		Set("failure_reason = ?", failureReason).
+		Set("failure_category = ?", failureCategory).
 		Set("processed_at = ?", now).
 		Where("pr_number = ?", prNumber).
 		Exec(ctx)
@@ -148,4 +189,41 @@ func (r *SearchRepository) CountUnprocessedPRs(ctx context.Context) (int, error)
 		Where("processed_at IS NULL").
 		Count(ctx)
 	return count, err
+}
+
+func (r *SearchRepository) TraceImageCacheGet(ctx context.Context, commitSHA, environment string) (*TraceImageCache, error) {
+	entry := new(TraceImageCache)
+	err := r.db.NewSelect().Model(entry).
+		Where("commit_sha = ? AND environment = ?", commitSHA, environment).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return entry, nil
+}
+
+func (r *SearchRepository) TraceImageCacheUpsert(ctx context.Context, commitSHA, environment string, resp tooltypes.TraceImagesResponse) error {
+	if r.TraceCacheMax <= 0 {
+		return nil
+	}
+	entry := &TraceImageCache{
+		CommitSHA:   commitSHA,
+		Environment: environment,
+		Response:    resp,
+	}
+	_, err := r.db.NewInsert().
+		Model(entry).
+		On("CONFLICT (commit_sha, environment) DO UPDATE SET response_json = EXCLUDED.response_json, inserted_at = now()").
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.NewDelete().
+		Model((*TraceImageCache)(nil)).
+		Where("ctid IN (SELECT ctid FROM trace_image_cache ORDER BY inserted_at DESC OFFSET ?)", r.TraceCacheMax).
+		Exec(ctx)
+	return err
 }

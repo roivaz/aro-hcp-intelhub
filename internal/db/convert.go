@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp/tools/types"
+	"github.com/roivaz/aro-hcp-intelhub/internal/mcp/tools/types"
 )
 
 func ToPRResult(entity PREmbedding, similarity *float64) types.PRResult {

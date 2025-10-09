@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/db"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/ingestion/embeddings"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp/tools/types"
+	"github.com/roivaz/aro-hcp-intelhub/internal/db"
+	"github.com/roivaz/aro-hcp-intelhub/internal/ingestion/embeddings"
+	"github.com/roivaz/aro-hcp-intelhub/internal/mcp/tools/types"
 )
 
 type DBSearchService struct {
@@ -42,6 +42,38 @@ func (s *DBSearchService) SearchPRs(ctx context.Context, query string, limit int
 		similarity := 1 - (row.Distance / 2.0)
 		result := db.ToPRResult(row.PREmbedding, &similarity)
 		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (s *DBSearchService) SearchDocs(ctx context.Context, query string, limit int, component, repo *string, includeFull bool) ([]types.DocResult, error) {
+	if strings.TrimSpace(query) == "" {
+		return []types.DocResult{}, nil
+	}
+	vectors, err := s.EmbedClient.EmbedTexts(ctx, []string{query})
+	if err != nil {
+		return nil, fmt.Errorf("embed query: %w", err)
+	}
+	if len(vectors) == 0 {
+		return []types.DocResult{}, nil
+	}
+	rows, err := s.Repository.SearchDocs(ctx, vectors[0], limit, component, repo)
+	if err != nil {
+		return nil, fmt.Errorf("search docs: %w", err)
+	}
+	results := make([]types.DocResult, 0, len(rows))
+	for _, row := range rows {
+		sim := 1 - row.Distance
+		r := types.DocResult{
+			Repo:       row.DocumentChunk.Repo,
+			Component:  row.DocumentChunk.Component,
+			Path:       row.DocumentChunk.Path,
+			CommitSHA:  row.DocumentChunk.CommitSHA,
+			SourceURL:  row.DocumentChunk.SourceURL,
+			Snippet:    row.Snippet,
+			Similarity: sim,
+		}
+		results = append(results, r)
 	}
 	return results, nil
 }

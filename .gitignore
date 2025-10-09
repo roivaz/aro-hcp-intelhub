@@ -23,7 +23,6 @@ vendor/
 
 # Tooling artifacts
 cloud-provider-kind.log
-tmp/cloud-provider-kind.pid
 kubeconfig
 
 # IDE/editor metadata
@@ -34,3 +33,7 @@ kubeconfig
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+# tmp/ignore folders
+tmp/
+ignore/

@@ -6,14 +6,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/gitrepo"
+	"github.com/roivaz/aro-hcp-intelhub/internal/gitrepo"
+	"github.com/roivaz/aro-hcp-intelhub/internal/logging"
 )
 
 var configureFetchSpecOnce sync.Once
 
 const prFetchSpec = "+refs/pull/*/head:refs/remotes/origin/pr/*"
 
-func fetchConsolidatedDiff(ctx context.Context, meta PRMetadata, repoPath string, log logger) (string, error) {
+func fetchConsolidatedDiff(ctx context.Context, meta PRMetadata, repoPath string, log logging.Logger) (string, error) {
 	if repoPath == "" {
 		return "", fmt.Errorf("diff analyzer requires repo path")
 	}
@@ -50,7 +51,7 @@ func fetchConsolidatedDiff(ctx context.Context, meta PRMetadata, repoPath string
 	return "", fmt.Errorf("merged PR with no merge commit available")
 }
 
-func ensurePRFetchSpec(ctx context.Context, repoPath string, log logger) error {
+func ensurePRFetchSpec(ctx context.Context, repoPath string, log logging.Logger) error {
 	var returnErr error
 	configureFetchSpecOnce.Do(func() {
 		output, err := gitCommand(ctx, repoPath, "config", "--local", "--get-all", "remote.origin.fetch")

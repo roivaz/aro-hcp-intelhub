@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/config"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp"
+	"github.com/roivaz/aro-hcp-intelhub/internal/config"
+	"github.com/roivaz/aro-hcp-intelhub/internal/mcp"
 )
 
 func main() {

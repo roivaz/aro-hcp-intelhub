@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/roivaz/aro-hcp-intelhub/internal/logging"
 )
 
 type Analyzer struct {
 	cfg       Config
-	log       logger
+	log       logging.Logger
 	patterns  map[string]*regexp.Regexp
 	llmClient *llmClient
 }
 
 func NewAnalyzer(cfg Config) (*Analyzer, error) {
-	log := newLogger(cfg.Logger)
+	log := logging.New(cfg.Logger)
 
 	patterns := buildIgnorePatterns()
 
@@ -35,7 +37,7 @@ func NewAnalyzer(cfg Config) (*Analyzer, error) {
 func (a *Analyzer) Analyze(ctx context.Context, meta PRMetadata) (Analysis, error) {
 	if !a.cfg.Enabled {
 		a.log.Info("diff analyzer disabled", "pr", meta.Number)
-		return Analysis{AnalysisSuccessful: false, FailureReason: "diff analyzer disabled"}, nil
+		return Analysis{AnalysisSuccessful: false, FailureReason: "diff analyzer disabled", FailureCategory: "disabled"}, nil
 	}
 
 	diffText, err := fetchConsolidatedDiff(ctx, meta, a.cfg.RepoPath, a.log)
@@ -67,13 +69,20 @@ func (a *Analyzer) Analyze(ctx context.Context, meta PRMetadata) (Analysis, erro
 		"median_tokens", stats.MedianTokens,
 	)
 
+	if len(docs) > 100 {
+		a.log.Error(fmt.Errorf("large diff detected: %d chunks", len(docs)), "large diff", "pr", meta.Number, "files", len(docs))
+		return Analysis{AnalysisSuccessful: false, FailureReason: "large diff detected",
+			FailureCategory: FailureCategoryLargeDiff}, nil
+	}
+
 	mapSummaries := make([]string, 0, len(docs))
 	for idx, doc := range docs {
 		a.log.Debug(fmt.Sprintf("mapping chunk %d/%d", idx+1, len(docs)), "file", doc.FilePath)
 		result, err := a.llmClient.mapChunk(ctx, doc, meta)
 		if err != nil {
 			a.log.Error(err, "map stage failed", "file", doc.FilePath)
-			return Analysis{AnalysisSuccessful: false, FailureReason: err.Error()}, nil
+			reason, category := GetFailureDetails(err)
+			return Analysis{AnalysisSuccessful: false, FailureReason: reason, FailureCategory: category}, nil
 		}
 		mapSummaries = append(mapSummaries, result)
 	}
@@ -81,7 +90,8 @@ func (a *Analyzer) Analyze(ctx context.Context, meta PRMetadata) (Analysis, erro
 	reduceResult, err := a.llmClient.reduceSummary(ctx, mapSummaries, meta)
 	if err != nil {
 		a.log.Error(err, "reduce stage failed", "pr", meta.Number)
-		return Analysis{AnalysisSuccessful: false, FailureReason: err.Error()}, nil
+		reason, category := GetFailureDetails(err)
+		return Analysis{AnalysisSuccessful: false, FailureReason: reason, FailureCategory: category}, nil
 	}
 	a.log.Debug("Reduce stage completed", "summary", reduceResult)
 

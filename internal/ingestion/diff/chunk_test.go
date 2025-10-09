@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	"github.com/roivaz/aro-hcp-intelhub/internal/logging"
 )
 
 func TestSplitDiffIntoFiles(t *testing.T) {
@@ -23,7 +24,7 @@ index 789..abc 100644
 -baz
 +qux
 `
-	chunks := splitDiffIntoFiles(diff, newLogger(logr.Discard()))
+	chunks := splitDiffIntoFiles(diff, logging.New(logr.Discard()))
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
@@ -55,7 +56,7 @@ func TestBuildDocuments_SplitsLargeChunk(t *testing.T) {
 	cfg := Config{MaxContextTokens: 20}
 	chunks := [][2]string{{"file.txt", longDiff()}}
 
-	docs, stats := buildDocuments(chunks, newLogger(logr.Discard()), cfg)
+	docs, stats := buildDocuments(chunks, logging.New(logr.Discard()), cfg)
 	if len(docs) == 0 {
 		t.Fatalf("expected documents")
 	}

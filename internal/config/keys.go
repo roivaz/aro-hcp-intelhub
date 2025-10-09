@@ -8,8 +8,6 @@ const (
 	KeyCacheDir             = "cache_dir"
 	KeyEmbeddingModel       = "embedding_model_name"
 	KeyGitHubFetchMax       = "github_fetch_max"
-	KeyGitHubFetchStartDate = "github_fetch_start_date"
-	KeyRecreateMode         = "recreate"
 	KeyExecutionMode        = "execution_mode"
 	KeyMaxProcessBatch      = "max_process_batch"
 	KeyDiffEnabled          = "diff_analysis_enabled"
@@ -19,4 +17,7 @@ const (
 	KeyRepoPath             = "aro_hcp_repo_path"
 	KeyTraceSkopeo          = "trace_skopeo_path"
 	KeyTraceSecret          = "pull_secret"
+	KeyAutoMigrate          = "auto_migrate"
+	KeyLLMCallTimeout       = "llm_call_timeout"
+	KeyTraceCacheMaxEntries = "trace_cache_max_entries"
 )

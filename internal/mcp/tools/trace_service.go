@@ -2,42 +2,24 @@ package tools
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/mcp/tools/types"
-	"github.com/rvazquez/ai-assisted-observability-poc/go/internal/tracing"
+	"github.com/roivaz/aro-hcp-intelhub/internal/mcp/tools/types"
+	"github.com/roivaz/aro-hcp-intelhub/internal/traceimages"
 )
 
-type TraceImagesService struct {
-	Tracer *tracing.Tracer
+// TraceImagesServiceAdapter bridges the MCP handler to the traceimages service.
+type TraceImagesServiceAdapter struct {
+	Service *traceimages.Service
 }
 
-func NewTraceImagesService(tracer *tracing.Tracer) *TraceImagesService {
-	return &TraceImagesService{Tracer: tracer}
+func NewTraceImagesServiceAdapter(svc *traceimages.Service) *TraceImagesServiceAdapter {
+	return &TraceImagesServiceAdapter{Service: svc}
 }
 
-func (s *TraceImagesService) TraceImages(ctx context.Context, commitSHA, environment string) (types.TraceImagesResponse, error) {
-	result, err := s.Tracer.Trace(ctx, commitSHA, environment)
-	if err != nil {
-		return types.TraceImagesResponse{}, err
+func (a *TraceImagesServiceAdapter) TraceImages(ctx context.Context, commitSHA, environment string) (types.TraceImagesResponse, error) {
+	if a.Service == nil {
+		return types.TraceImagesResponse{}, fmt.Errorf("trace service not configured")
 	}
-
-	components := make([]types.ComponentTraceInfo, len(result.Components))
-	for i, comp := range result.Components {
-		components[i] = types.ComponentTraceInfo{
-			Name:          comp.Name,
-			Registry:      comp.Registry,
-			Repository:    comp.Repository,
-			Digest:        comp.Digest,
-			SourceSHA:     comp.SourceSHA,
-			SourceRepoURL: comp.SourceRepoURL,
-			Error:         comp.Error,
-		}
-	}
-
-	return types.TraceImagesResponse{
-		CommitSHA:   result.CommitSHA,
-		Environment: result.Environment,
-		Components:  components,
-		Errors:      result.Errors,
-	}, nil
+	return a.Service.TraceImages(ctx, commitSHA, environment)
 }
