@@ -24,6 +24,7 @@ type Config struct {
 	GitHubToken     string
 	AutoMigrate     bool
 	LLMCallTimeout  time.Duration
+	RetryFailed     bool // Retry diff analysis on previously failed PRs
 }
 
 func LoadConfig() (Config, error) {

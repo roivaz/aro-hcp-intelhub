@@ -41,23 +41,45 @@ func (r Runner) Git(ctx context.Context, dir string, args ...string) (string, er
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 	if err := c.Start(); err != nil {
-		return "", err
+		return "", formatGitError(args, err, stderr.String())
 	}
 	done := make(chan error, 1)
 	go func() { done <- c.Wait() }()
 	select {
 	case err := <-done:
 		if err != nil {
-			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+			return "", formatGitError(args, err, stderr.String())
 		}
 		return stdout.String(), nil
 	case <-time.After(r.Timeout):
 		_ = c.Process.Kill()
-		return "", errors.New("git command timed out")
+		<-done
+		return "", formatGitTimeoutError(args, r.Timeout, stderr.String())
 	case <-ctx.Done():
 		_ = c.Process.Kill()
-		return "", ctx.Err()
+		<-done
+		return "", formatGitContextError(args, ctx.Err(), stderr.String())
 	}
+}
+
+func formatGitError(args []string, cause error, stderr string) error {
+	cmd := strings.Join(args, " ")
+	stderr = strings.TrimSpace(stderr)
+	if stderr != "" {
+		return fmt.Errorf("git %s: %w: %s", cmd, cause, stderr)
+	}
+	return fmt.Errorf("git %s: %w", cmd, cause)
+}
+
+func formatGitTimeoutError(args []string, timeout time.Duration, stderr string) error {
+	return formatGitError(args, fmt.Errorf("command timed out after %s", timeout), stderr)
+}
+
+func formatGitContextError(args []string, cause error, stderr string) error {
+	if cause == nil {
+		cause = errors.New("context canceled")
+	}
+	return formatGitError(args, cause, stderr)
 }
 
 // Run is a helper to execute arbitrary git subcommands in the repo path.

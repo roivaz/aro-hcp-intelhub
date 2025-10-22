@@ -100,3 +100,22 @@ func (c *llmClient) annotateError(err error) error {
 	}
 	return err
 }
+
+func (c *llmClient) HealthCheck(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	messages := []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "test"}},
+		},
+	}
+
+	_, err := c.llm.GenerateContent(ctx, messages)
+	if err != nil {
+		return fmt.Errorf("model health check failed - try restarting Ollama server: %w", err)
+	}
+	c.log.Info("LLM model health check passed")
+	return nil
+}

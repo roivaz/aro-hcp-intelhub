@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/pgvector/pgvector-go"
-	"github.com/uptrace/bun"
 
 	"github.com/roivaz/aro-hcp-intelhub/internal/db"
 	"github.com/roivaz/aro-hcp-intelhub/internal/gitrepo"
@@ -32,7 +31,7 @@ type RepoSpec struct {
 }
 
 type Ingester struct {
-	DB        *bun.DB
+	Repo      *db.SearchRepository
 	Client    EmbeddingClient
 	Chunker   Chunker
 	Include   []string
@@ -43,64 +42,96 @@ type Ingester struct {
 }
 
 func (i *Ingester) Run(ctx context.Context, repos []RepoSpec) error {
+	for _, r := range repos {
+		if err := i.ingestRepoAtomic(ctx, r); err != nil {
+			return fmt.Errorf("failed to ingest %s: %w", r.Name, err)
+		}
+	}
+	return nil
+}
+
+func (i *Ingester) ingestRepoAtomic(ctx context.Context, r RepoSpec) error {
+	// Create batch writer (handles transaction, temp table internally)
+	writer, err := i.Repo.NewDocumentBatchWriter(ctx, r.Name)
+	if err != nil {
+		return fmt.Errorf("create batch writer: %w", err)
+	}
+	defer writer.Rollback() // Safe to call even after commit
+
+	// Get repo reference
+	repo := gitrepo.New(gitrepo.RepoConfig{Path: r.Path})
+	ref := r.Ref
+	if ref == "" {
+		head, err := repo.HeadSHA(ctx)
+		if err != nil {
+			return fmt.Errorf("get HEAD: %w", err)
+		}
+		ref = head
+	}
+
+	// List and filter files
+	files, err := repo.ListFiles(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("list files: %w", err)
+	}
+
 	includeRx := globsToRegexp(i.Include)
 	excludeRx := globsToRegexp(i.Exclude)
-	totalChunks := 0
+	selected := filterFiles(files, includeRx, excludeRx, i.MaxFiles)
 
-	for _, r := range repos {
-		repo := gitrepo.New(gitrepo.RepoConfig{Path: r.Path})
-		ref := r.Ref
-		if ref == "" {
-			head, err := repo.HeadSHA(ctx)
-			if err != nil {
-				return err
-			}
-			ref = head
+	// Process files and add to batch
+	for _, p := range selected {
+		if i.MaxChunks > 0 && writer.Count() >= i.MaxChunks {
+			break
 		}
-		files, err := repo.ListFiles(ctx, ref)
+
+		content, err := repo.ShowFile(ctx, ref, p)
 		if err != nil {
-			return err
+			continue
 		}
 
-		selected := filterFiles(files, includeRx, excludeRx, i.MaxFiles)
-		for _, p := range selected {
-			if i.MaxChunks > 0 && totalChunks >= i.MaxChunks {
-				return nil
+		parts := i.Chunker.Split(string(content))
+		for idx, part := range parts {
+			if strings.TrimSpace(part) == "" {
+				continue
 			}
-			content, err := repo.ShowFile(ctx, ref, p)
+			if i.MaxChunks > 0 && writer.Count() >= i.MaxChunks {
+				break
+			}
+
+			// Embed the chunk
+			vecs, err := i.Client.EmbedTexts(ctx, []string{part})
 			if err != nil {
 				continue
 			}
-			parts := i.Chunker.Split(string(content))
-			for idx, part := range parts {
-				if strings.TrimSpace(part) == "" {
-					continue
-				}
-				if i.MaxChunks > 0 && totalChunks >= i.MaxChunks {
-					return nil
-				}
-				vecs, err := i.Client.EmbedTexts(ctx, []string{part})
-				if err != nil {
-					continue
-				}
-				id := sha256Hex(r.Name + ":" + p + ":" + ref + ":" + itoa(idx) + ":" + part)
-				doc := db.DocumentChunk{
-					ID:             id,
-					Repo:           r.Name,
-					Path:           p,
-					CommitSHA:      ref,
-					DocType:        classifyDocType(p),
-					ChunkIndex:     idx,
-					ChunkText:      part,
-					Embedding:      pgvector.NewVector(vecs[0]),
-					EmbeddingModel: i.ModelName,
-					SourceURL:      strptr(guessURL(r.Name, p, ref)),
-				}
-				_, _ = i.DB.NewInsert().Model(&doc).On("CONFLICT (id) DO NOTHING").Exec(ctx)
-				totalChunks++
+
+			// Create document
+			id := sha256Hex(r.Name + ":" + p + ":" + ref + ":" + itoa(idx) + ":" + part)
+			doc := db.DocumentChunk{
+				ID:             id,
+				Repo:           r.Name,
+				Path:           p,
+				CommitSHA:      ref,
+				DocType:        classifyDocType(p),
+				ChunkIndex:     idx,
+				ChunkText:      part,
+				Embedding:      pgvector.NewVector(vecs[0]),
+				EmbeddingModel: i.ModelName,
+				SourceURL:      strptr(guessURL(r.Name, p, ref)),
+			}
+
+			// Add to batch
+			if err := writer.Add(ctx, &doc); err != nil {
+				continue
 			}
 		}
 	}
+
+	// Commit atomic swap
+	if err := writer.Commit(ctx); err != nil {
+		return fmt.Errorf("commit batch: %w", err)
+	}
+
 	return nil
 }
 
@@ -114,9 +145,16 @@ func globsToRegexp(globs []string) *regexp.Regexp {
 		if g == "" {
 			continue
 		}
-		// very small glob→regex: ** → .*, * → [^/]*, . escape
+		// Convert glob to regex:
+		// **/ → (.*/)? (zero or more directories)
+		// ** → .* (any characters)
+		// * → [^/]* (any characters except /)
 		r := regexp.QuoteMeta(g)
+		// Handle **/ as a special case (must come before ** replacement)
+		r = strings.ReplaceAll(r, "\\*\\*/", "(.*/)?")
+		// Handle remaining ** (not followed by /)
 		r = strings.ReplaceAll(r, "\\*\\*", ".*")
+		// Handle single *
 		r = strings.ReplaceAll(r, "\\*", "[^/]*")
 		parts = append(parts, "^"+r+"$")
 	}

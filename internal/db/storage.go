@@ -14,6 +14,7 @@ import (
 
 type SearchRepository struct {
 	TraceCacheMax int
+	retryFailed   bool
 	db            *bun.DB
 }
 
@@ -38,6 +39,10 @@ func NewSearchRepository(database *Database, opts ...func(*SearchRepository)) *S
 
 func WithTraceCacheMax(n int) func(*SearchRepository) {
 	return func(r *SearchRepository) { r.TraceCacheMax = n }
+}
+
+func WithRetryFailed(retry bool) func(*SearchRepository) {
+	return func(r *SearchRepository) { r.retryFailed = retry }
 }
 
 func (r *SearchRepository) LatestMergedPR(ctx context.Context) (time.Time, int, error) {
@@ -159,12 +164,17 @@ func (r *SearchRepository) GetUnprocessedPRs(ctx context.Context, limit int) ([]
 		limit = 100
 	}
 	var prs []*PREmbedding
-	err := r.db.NewSelect().
-		Model(&prs).
-		Where("processed_at IS NULL").
-		OrderExpr("merged_at DESC").
-		Limit(limit).
-		Scan(ctx)
+	query := r.db.NewSelect().Model(&prs)
+
+	if r.retryFailed {
+		// Include unprocessed PRs OR failed analyses
+		query = query.Where("processed_at IS NULL OR analysis_successful = ?", false)
+	} else {
+		// Only unprocessed PRs
+		query = query.Where("processed_at IS NULL")
+	}
+
+	err := query.OrderExpr("merged_at DESC").Limit(limit).Scan(ctx)
 	return prs, err
 }
 
@@ -184,10 +194,17 @@ func (r *SearchRepository) UpdatePRProcessing(ctx context.Context, prNumber int,
 }
 
 func (r *SearchRepository) CountUnprocessedPRs(ctx context.Context) (int, error) {
-	count, err := r.db.NewSelect().
-		Model((*PREmbedding)(nil)).
-		Where("processed_at IS NULL").
-		Count(ctx)
+	query := r.db.NewSelect().Model((*PREmbedding)(nil))
+
+	if r.retryFailed {
+		// Count unprocessed PRs OR failed analyses
+		query = query.Where("processed_at IS NULL OR analysis_successful = ?", false)
+	} else {
+		// Only unprocessed PRs
+		query = query.Where("processed_at IS NULL")
+	}
+
+	count, err := query.Count(ctx)
 	return count, err
 }
 
@@ -226,4 +243,130 @@ func (r *SearchRepository) TraceImageCacheUpsert(ctx context.Context, commitSHA,
 		Where("ctid IN (SELECT ctid FROM trace_image_cache ORDER BY inserted_at DESC OFFSET ?)", r.TraceCacheMax).
 		Exec(ctx)
 	return err
+}
+
+// DocumentBatchWriter provides atomic replace of all documents for a repository.
+// Documents are buffered until Commit() is called, at which point they atomically
+// replace all existing documents for the repository.
+type DocumentBatchWriter interface {
+	// Add a document chunk to the batch
+	Add(ctx context.Context, doc *DocumentChunk) error
+
+	// Commit atomically replaces old documents with new ones
+	Commit(ctx context.Context) error
+
+	// Rollback discards all buffered documents
+	Rollback() error
+
+	// Count returns number of documents added so far
+	Count() int
+}
+
+// NewDocumentBatchWriter creates a batch writer for atomically replacing
+// all documents for a given repository.
+func (r *SearchRepository) NewDocumentBatchWriter(ctx context.Context, repo string) (DocumentBatchWriter, error) {
+	return newPGDocumentBatchWriter(ctx, r.db, repo)
+}
+
+// pgDocumentBatchWriter implements DocumentBatchWriter using PostgreSQL temp tables
+type pgDocumentBatchWriter struct {
+	db         bun.IDB
+	tx         bun.Tx
+	repo       string
+	count      int
+	committed  bool
+	rolledBack bool
+}
+
+func newPGDocumentBatchWriter(ctx context.Context, db bun.IDB, repo string) (*pgDocumentBatchWriter, error) {
+	// Start transaction
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create temp table (raw SQL needed for DDL)
+	_, err = tx.NewRaw(`CREATE TEMP TABLE documents_temp (LIKE documents INCLUDING ALL) 
+         ON COMMIT DROP`).Exec(ctx)
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	return &pgDocumentBatchWriter{
+		db:   db,
+		tx:   tx,
+		repo: repo,
+	}, nil
+}
+
+func (w *pgDocumentBatchWriter) Add(ctx context.Context, doc *DocumentChunk) error {
+	if w.committed {
+		return errors.New("cannot add after commit")
+	}
+	if w.rolledBack {
+		return errors.New("cannot add after rollback")
+	}
+
+	_, err := w.tx.NewInsert().
+		Model(doc).
+		Table("documents_temp").
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	w.count++
+	return nil
+}
+
+func (w *pgDocumentBatchWriter) Commit(ctx context.Context) error {
+	if w.committed {
+		return errors.New("already committed")
+	}
+	if w.rolledBack {
+		return errors.New("already rolled back")
+	}
+
+	// Delete old documents for this repo using Bun's query builder
+	_, err := w.tx.NewDelete().
+		Model((*DocumentChunk)(nil)).
+		Where("repo = ?", w.repo).
+		Exec(ctx)
+	if err != nil {
+		w.tx.Rollback()
+		return err
+	}
+
+	// Copy from temp to main table (raw SQL needed for INSERT FROM SELECT)
+	_, err = w.tx.NewRaw("INSERT INTO documents SELECT * FROM documents_temp").Exec(ctx)
+	if err != nil {
+		w.tx.Rollback()
+		return err
+	}
+
+	// Commit transaction (temp table auto-drops)
+	if err := w.tx.Commit(); err != nil {
+		return err
+	}
+
+	w.committed = true
+	return nil
+}
+
+func (w *pgDocumentBatchWriter) Rollback() error {
+	if w.committed {
+		return errors.New("already committed")
+	}
+	if w.rolledBack {
+		return nil // Idempotent
+	}
+
+	err := w.tx.Rollback()
+	w.rolledBack = true
+	return err
+}
+
+func (w *pgDocumentBatchWriter) Count() int {
+	return w.count
 }

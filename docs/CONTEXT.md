@@ -109,5 +109,109 @@ ARO-HCP Release & Incident Intelligence unifies code changes, deployments, and o
 - Added `cmd/trace-images` CLI sharing the MCP `trace_images` flow, making local traces easy to run against any commit/environment.
 - Folded the tracer into `internal/traceimages`, removed the separate `internal/tracing` package, and reused the same cache-aware service everywhere.
 
+### October 2025 - Atomic Docs Ingestion & Path Filtering
+**Problem Solved**: Stale document embeddings persisted across ingestions, returning outdated search results; deleted files remained in the database indefinitely.
+
+**Major Changes**:
+1. **Atomic Document Ingestion Architecture**:
+   - Implemented `DocumentBatchWriter` interface in `internal/db/storage.go`
+   - Uses PostgreSQL temp tables + transactions for atomic repository refresh
+   - Pattern: create temp table → ingest to temp → DELETE old repo docs → INSERT from temp → commit
+   - Temp tables use `ON COMMIT DROP` for automatic cleanup
+   - `defer writer.Rollback()` ensures safe cleanup on errors
+   
+2. **Proper Separation of Concerns**:
+   - DB operations (transactions, temp tables, SQL) confined to `internal/db` package
+   - Business logic (file processing, chunking, embedding) stays in `internal/docs`
+   - `Ingester` now uses `*db.SearchRepository` instead of raw `*bun.DB`
+   - Clean API: `NewDocumentBatchWriter()` → `Add()` → `Commit()`
+
+3. **Path Filtering for Docs Ingestion**:
+   - Added `--include-path` flag to `ingest docs` command
+   - Filters ingestion to specific directory paths (e.g., `--include-path docs/aro_hcp`)
+   - Uses pattern composition: prepends path to glob patterns (e.g., `docs/aro_hcp/**/*.md`)
+   - Simpler than separate filtering stage, works with existing glob logic
+
+4. **Bug Fixes**:
+   - Fixed glob pattern conversion: `**/` now converts to `(.*/)?` (zero or more directories)
+   - Previously `docs/aro_hcp/**/*.md` wouldn't match files directly in `docs/aro_hcp/`
+   - Fixed Bun transaction API usage: use `tx.NewDelete()` / `tx.NewRaw()` instead of raw `Exec()`
+   - Removed redundant `README.md` pattern (already covered by `**/*.md`)
+
+**Key Benefits**:
+- **No stale docs**: Each ingestion atomically replaces all repository documents
+- **Handles deletions**: Deleted files properly removed from search results
+- **Atomic consistency**: Either all new data or all old data (no partial state)
+- **No search downtime**: Old docs remain searchable during ingestion
+- **Safe error handling**: Transaction rollback preserves old data on failure
+- **Database-agnostic interface**: Could implement for SQLite, MySQL, etc.
+
+**Usage Example**:
+```bash
+# Ingest only ARO-HCP docs from specific directory
+ingest docs --repo-url https://github.com/Azure/ARO-HCP --include-path docs/aro_hcp/
+
+# Re-ingestion atomically replaces all docs for that repo
+ingest docs --repo-url https://github.com/Azure/ARO-HCP
+```
+
+### October 2025 - Retry Failed PRs & Embedding Architecture Fix
+**Problem Discovered**: Transient Ollama server issue caused batch of PRs to fail diff analysis. Two critical issues emerged:
+1. **No retry mechanism** for failed diff analyses
+2. **Embeddings excluded rich descriptions** from LLM analysis, severely limiting search quality
+
+**Root Cause Analysis**:
+- Ollama server experienced transient "failed to allocate compute buffers" error
+- Issue resolved by restarting Ollama server (service state corruption, not code issue)
+- But revealed ~1000 PRs marked `analysis_successful=false` with no way to retry
+- More critically: embeddings were generated from only PR title + body, ignoring the LLM's rich description of code changes
+
+**Major Changes**:
+1. **Added --retry-failed Flag**:
+   - New CLI flag: `ingest prs --retry-failed`
+   - Enables retrying diff analysis on previously failed PRs
+   - Modified `GetUnprocessedPRs()` to include `analysis_successful = false` when enabled
+   - Applied via `WithRetryFailed()` option to `SearchRepository`
+
+2. **Fixed Critical Embedding Architecture** (major search quality improvement):
+   - **Before**: Diff analysis ran AFTER embedding generation
+     - Embedding: `BuildDocument(title, body, "")` (rich description unused!)
+     - Search missed LLM's understanding of actual code changes
+   - **After**: Diff analysis runs BEFORE embedding generation
+     - Embedding: `BuildDocument(title, body, richDescription)` (includes LLM analysis!)
+     - Search now sees: PR metadata + AI understanding of code changes
+   - Reordered `processSinglePR()` in `internal/ingestion/generator.go`
+   - When retrying failed PRs, embeddings are regenerated with rich descriptions
+
+3. **Added LLM Model Health Check**:
+   - `HealthCheck()` method in `internal/ingestion/diff/llm.go`
+   - Called during `NewAnalyzer()` initialization before processing batch
+   - Fails fast with helpful error message if model unavailable
+   - Prevents wasting time processing 1000 PRs when Ollama server is broken
+   - Suggests: restart Ollama server, re-pull model, check GPU memory
+
+**Files Modified**:
+- `cmd/ingest/main.go` - Added --retry-failed flag
+- `internal/ingestion/config.go` - Added RetryFailed field
+- `internal/db/storage.go` - Updated query logic for retry mode
+- `internal/ingestion/generator.go` - Reordered diff analysis before embedding (critical fix!)
+- `internal/ingestion/diff/llm.go` - Added health check method
+- `internal/ingestion/diff/analyzer.go` - Call health check on initialization
+
+**Impact**:
+- **Search Quality**: Dramatic improvement for PRs with vague titles but meaningful code changes
+- **Retry Capability**: Can now recover from transient Ollama failures without losing work
+- **Fail Fast**: Health check prevents batch failures, saves time debugging
+
+**Usage**:
+```bash
+# Check failed PRs count
+psql -d aro_hcp_embeddings -c "SELECT COUNT(*) FROM pr_embeddings WHERE analysis_successful = false;"
+
+# Retry failed PRs with improved embedding architecture
+go run ./cmd/ingest prs --retry-failed
+
+# All retried PRs get new embeddings including rich descriptions
+```
 
 

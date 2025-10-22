@@ -65,6 +65,12 @@ func (g *Generator) RunProcess(ctx context.Context) error {
 		limit = g.cfg.GitHubFetchMax
 	}
 
+	// Apply retry mode to repository if enabled
+	if g.cfg.RetryFailed {
+		db.WithRetryFailed(true)(g.repo)
+		log.Printf("retry mode enabled: will retry previously failed diff analyses")
+	}
+
 	unprocessedCount, err := g.repo.CountUnprocessedPRs(ctx)
 	if err != nil {
 		return fmt.Errorf("count unprocessed PRs: %w", err)
@@ -202,27 +208,7 @@ func (g *Generator) cachePRs(ctx context.Context, prs []PRChange) error {
 }
 
 func (g *Generator) processSinglePR(ctx context.Context, pr *db.PREmbedding, analyzer *diffanalyzer.Analyzer) error {
-	log.Printf("process: generating embedding for PR #%d", pr.PRNumber)
-
-	document := embeddings.BuildDocument(pr.PRTitle, pr.PRBody, "")
-	vectors, err := g.embedClient.EmbedTexts(ctx, []string{document})
-	if err != nil {
-		reason, category := diffanalyzer.GetFailureDetails(err)
-		log.Printf("process: embedding failed for PR #%d: %v", pr.PRNumber, err)
-		if updateErr := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, nil, nil, false, strPtr(reason), strPtr(string(category))); updateErr != nil {
-			return fmt.Errorf("update PR #%d after embedding failure: %w", pr.PRNumber, updateErr)
-		}
-		return nil
-	}
-	if len(vectors) == 0 {
-		reason := "embedding returned no vectors"
-		if updateErr := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, nil, nil, false, strPtr(reason), strPtr("empty_embedding")); updateErr != nil {
-			return fmt.Errorf("update PR #%d after empty embedding: %w", pr.PRNumber, updateErr)
-		}
-		return nil
-	}
-
-	embedding := pgvector.NewVector(vectors[0])
+	// STEP 1: Run diff analysis FIRST (if enabled)
 	var richDescription *string
 	analysisSuccessful := false
 	var failureReason *string
@@ -263,6 +249,31 @@ func (g *Generator) processSinglePR(ctx context.Context, pr *db.PREmbedding, ana
 		}
 	}
 
+	// STEP 2: Generate embedding INCLUDING rich description
+	// This is critical for search quality - embeddings include LLM analysis of code changes
+	log.Printf("process: generating embedding for PR #%d", pr.PRNumber)
+	richDescText := stringValue(richDescription)
+	document := embeddings.BuildDocument(pr.PRTitle, pr.PRBody, richDescText)
+	vectors, err := g.embedClient.EmbedTexts(ctx, []string{document})
+	if err != nil {
+		reason, category := diffanalyzer.GetFailureDetails(err)
+		log.Printf("process: embedding failed for PR #%d: %v", pr.PRNumber, err)
+		if updateErr := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, nil, richDescription, analysisSuccessful, strPtr(reason), strPtr(string(category))); updateErr != nil {
+			return fmt.Errorf("update PR #%d after embedding failure: %w", pr.PRNumber, updateErr)
+		}
+		return nil
+	}
+	if len(vectors) == 0 {
+		reason := "embedding returned no vectors"
+		if updateErr := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, nil, richDescription, analysisSuccessful, strPtr(reason), strPtr("empty_embedding")); updateErr != nil {
+			return fmt.Errorf("update PR #%d after empty embedding: %w", pr.PRNumber, updateErr)
+		}
+		return nil
+	}
+
+	embedding := pgvector.NewVector(vectors[0])
+
+	// STEP 3: Update database with embedding + analysis results
 	if err := g.repo.UpdatePRProcessing(ctx, pr.PRNumber, &embedding, richDescription, analysisSuccessful, failureReason, failureCategory); err != nil {
 		return fmt.Errorf("update PR #%d: %w", pr.PRNumber, err)
 	}

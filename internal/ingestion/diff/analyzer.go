@@ -26,6 +26,13 @@ func NewAnalyzer(cfg Config) (*Analyzer, error) {
 		return nil, err
 	}
 
+	// Run health check to ensure model is available before processing batch
+	if cfg.Enabled {
+		if err := client.HealthCheck(context.Background()); err != nil {
+			return nil, fmt.Errorf("LLM model '%s' health check failed: %w\nSuggestions:\n  1. Restart Ollama server\n  2. Run: ollama pull %s\n  3. Check available GPU memory", cfg.ModelName, err, cfg.ModelName)
+		}
+	}
+
 	return &Analyzer{
 		cfg:       cfg,
 		log:       log,

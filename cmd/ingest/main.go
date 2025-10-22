@@ -26,6 +26,10 @@ var rootCmd = &cobra.Command{
 	Short: "Ingestion CLI (PRs, Docs)",
 }
 
+var (
+	retryFailed bool
+)
+
 var prsCmd = &cobra.Command{
 	Use:   "prs",
 	Short: "Ingest merged PRs (cache/process)",
@@ -33,6 +37,11 @@ var prsCmd = &cobra.Command{
 		cfg, err := ingestion.LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Set retry flag from command line
+		if retryFailed {
+			cfg.RetryFailed = true
 		}
 
 		database, err := db.NewDatabase(db.Config{DSN: cfg.PostgresURL})
@@ -64,6 +73,7 @@ func newDocsCmd() *cobra.Command {
 	var repoURLs []string
 	var component string
 	var ref string
+	var includePath string
 
 	cmd := &cobra.Command{
 		Use:   "docs",
@@ -74,6 +84,7 @@ func newDocsCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&repoURLs, "repo-url", nil, "Repo URL to ingest (repeat)")
 	cmd.Flags().StringVar(&component, "component", "", "Component name")
 	cmd.Flags().StringVar(&ref, "ref", "HEAD", "Reference name")
+	cmd.Flags().StringVar(&includePath, "include-path", "", "Only ingest files within this path (prefix match)")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		cfg, err := ingestion.LoadConfig()
@@ -86,14 +97,29 @@ func newDocsCmd() *cobra.Command {
 		}
 		defer database.Close()
 
+		repo := db.NewSearchRepository(database, db.WithTraceCacheMax(config.TraceCacheMaxEntries()))
+
 		// Markdown-aware chunker via langchaingo
 		chunker := docs.NewMDChunker(1000, 100)
 
+		// Build include patterns, optionally prefixed by includePath
+		includePatterns := []string{"**/*.md", "**/*.mdx"}
+		if includePath != "" {
+			// Ensure trailing slash
+			if includePath[len(includePath)-1] != '/' {
+				includePath = includePath + "/"
+			}
+			// Prepend path to each pattern
+			for i := range includePatterns {
+				includePatterns[i] = includePath + includePatterns[i]
+			}
+		}
+
 		ing := docs.Ingester{
-			DB:        database.Bun(),
+			Repo:      repo,
 			Client:    embeddings.NewClient(cfg.OllamaURL, cfg.EmbeddingModel, cfg.LLMCallTimeout),
 			Chunker:   chunker,
-			Include:   []string{"**/*.md", "**/*.mdx", "README.md"},
+			Include:   includePatterns,
 			Exclude:   []string{"**/.git/**"},
 			MaxFiles:  200,
 			MaxChunks: 1500,
@@ -131,6 +157,10 @@ func newDocsCmd() *cobra.Command {
 func main() {
 	// Bind config/env for all subcommands
 	config.Init(rootCmd)
+
+	// Add flags to prsCmd
+	prsCmd.Flags().BoolVar(&retryFailed, "retry-failed", false, "Retry diff analysis on previously failed PRs")
+
 	rootCmd.AddCommand(prsCmd)
 	rootCmd.AddCommand(newDocsCmd())
 

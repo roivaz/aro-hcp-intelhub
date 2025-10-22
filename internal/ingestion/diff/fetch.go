@@ -67,16 +67,6 @@ func ensurePRFetchSpec(ctx context.Context, repoPath string, log logging.Logger)
 	return returnErr
 }
 
-func normalizeBaseRef(base string) string {
-	switch {
-	case strings.HasPrefix(base, "refs/heads/"):
-		base = strings.TrimPrefix(base, "refs/heads/")
-	case strings.HasPrefix(base, "origin/"):
-		return base
-	}
-	return fmt.Sprintf("origin/%s", base)
-}
-
 // gitCommand retained only for config probing; consider replacing with gitrepo if needed elsewhere.
 func gitCommand(ctx context.Context, repoPath string, args ...string) (string, error) {
 	r := gitrepo.New(gitrepo.RepoConfig{Path: repoPath})
