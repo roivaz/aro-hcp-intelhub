@@ -30,5 +30,16 @@ func (h *TraceImagesHandler) ToolAdapter(ctx context.Context, req mcp.CallToolRe
 	if err != nil {
 		return nil, err
 	}
-	return mcp.NewToolResultText(string(mustMarshal(resp))), nil
+
+	response := struct {
+		CommitSHA   string                    `json:"commit_sha"`
+		Environment string                    `json:"environment"`
+		Results     types.TraceImagesResponse `json:"results"`
+	}{
+		CommitSHA:   commit,
+		Environment: env,
+		Results:     resp,
+	}
+
+	return mcp.NewToolResultText(string(mustMarshal(response))), nil
 }

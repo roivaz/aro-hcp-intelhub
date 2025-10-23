@@ -38,5 +38,12 @@ func (h *SearchPRsHandler) ToolAdapter(ctx context.Context, req mcp.CallToolRequ
 	if err != nil {
 		return nil, err
 	}
-	return mcp.NewToolResultText(string(mustMarshal(results))), nil
+
+	response := struct {
+		Query   string           `json:"query"`
+		Results []types.PRResult `json:"results"`
+		Total   int              `json:"total_found"`
+	}{Query: query, Results: results, Total: len(results)}
+
+	return mcp.NewToolResultText(string(mustMarshal(response))), nil
 }

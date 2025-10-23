@@ -47,5 +47,10 @@ func (h *GetPRDetailsHandler) ToolAdapter(ctx context.Context, req mcp.CallToolR
 	if err != nil {
 		return nil, err
 	}
-	return mcp.NewToolResultText(string(mustMarshal(pr))), nil
+
+	response := struct {
+		Result types.PRResult `json:"result"`
+	}{Result: pr}
+
+	return mcp.NewToolResultText(string(mustMarshal(response))), nil
 }
