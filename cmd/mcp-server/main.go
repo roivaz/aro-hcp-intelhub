@@ -60,7 +60,8 @@ func main() {
 
 type loggingResponseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode    int
+	headerWritten bool
 }
 
 func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
@@ -68,8 +69,11 @@ func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
 }
 
 func (lrw *loggingResponseWriter) WriteHeader(code int) {
-	lrw.statusCode = code
-	lrw.ResponseWriter.WriteHeader(code)
+	if !lrw.headerWritten {
+		lrw.statusCode = code
+		lrw.ResponseWriter.WriteHeader(code)
+		lrw.headerWritten = true
+	}
 }
 
 func newLoggingMiddleware(next http.Handler) http.Handler {

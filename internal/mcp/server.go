@@ -76,7 +76,7 @@ func New(cfg Config) *Server {
 			mcp.WithString("environment",
 				mcp.Required(),
 				mcp.Description("Deployment environment"),
-				mcp.Enum("dev", "staging", "production"),
+				mcp.Enum("dev", "stg", "prod", "int"),
 			),
 		),
 	}
